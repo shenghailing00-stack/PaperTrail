@@ -46,6 +46,23 @@ No SQLite, Streamlit, NetworkX, recommendation, full pagination harvest, second 
 - [ ] API key is neither committed nor printed.
 - [ ] Human owner can point to the request function and explain JSON parsing and exception handling.
 
+## Demo seeds (owner-selected 2026-10-28)
+
+Retrieval-augmented generation group. Use the first two for the 2-seed acceptance demo; DPR is the third seed.
+
+| Seed | ID | Global citations* | References returned / resolved* | With `contexts`* |
+|---|---|---|---|---|
+| REALM | `ARXIV:2002.08909` | 3,563 | 43 / 42 | 41 |
+| RAG | `ARXIV:2005.11401` | 20,138 | 67 / 67 | 64 |
+| DPR | `ARXIV:2004.04906` | 7,494 | 55 / 54 | 24 |
+
+\* Pre-check by Claude Code on 2026-10-28 (one references page, `limit=1000`, with API key); 31 resolved references are shared by ≥2 of these seeds. TASK-001 must re-verify with its own code. Observations from the same check across 12 candidate papers:
+
+- References can contain duplicates (e.g. GCN `referenceCount` 39, 40 items returned), so counts must be deduplicated by `paperId`.
+- `intents` can be nearly empty even when `contexts` exist (e.g. Latent Diffusion 2/111); treat `contexts` as the primary evidence.
+- Up to ~9% of references are unresolved (`paperId: null`).
+- Even with a key, retries happened (24 requests took >6 min); log the reason (429 vs. connection error) for every retry.
+
 ## Required handoff
 
 Show changed paths, commands to run, output example with sensitive values redacted, tests run and status, API limitation notes and 3 short learning questions. Stop when acceptance is met; do not pre-implement TASK-002.
