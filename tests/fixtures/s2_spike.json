@@ -1,0 +1,26 @@
+{
+  "_provenance": "Synthetic offline fixture. Not a live Semantic Scholar response.",
+  "metadata": {
+    "paperId": "seed-id", "externalIds": {"ArXiv": "0000.00000"},
+    "title": "Synthetic seed", "year": 2024,
+    "authors": [{"authorId": "author-id", "name": "Example Author"}],
+    "url": "https://example.org/seed", "abstract": "Synthetic abstract.",
+    "referenceCount": 3, "citationCount": 1
+  },
+  "references": {
+    "offset": 0,
+    "data": [
+      {"contexts": ["We use the example method."], "intents": ["methodology"], "isInfluential": false,
+       "citedPaper": {"paperId": "ref-id", "title": "Synthetic reference", "abstract": "Short abstract."}},
+      {"contexts": [], "intents": null, "isInfluential": null,
+       "citedPaper": {"paperId": null, "title": "Unresolved example", "abstract": null}},
+      {"contexts": null, "isInfluential": true,
+       "citedPaper": {"paperId": "ref-id", "abstract": null}}
+    ]
+  },
+  "citations": {
+    "offset": 0, "next": 1,
+    "data": [{"contexts": [], "intents": [], "isInfluential": false,
+              "citingPaper": {"paperId": "citing-id", "abstract": null}}]
+  }
+}
