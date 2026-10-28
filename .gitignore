@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# PaperTrail local data (never commit)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+data/raw/
+output/
+# Small sanitized test fixtures ARE committed: tests/fixtures/
