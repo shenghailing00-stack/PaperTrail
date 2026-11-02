@@ -1,0 +1,31 @@
+{
+  "_provenance": "Synthetic offline fixture; not real papers or live API responses. Use a separate demo database.",
+  "metadata": {
+    "ARXIV:0000.00001": {
+      "paperId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "title": "Synthetic seed A", "year": 2024,
+      "externalIds": {"ArXiv": "0000.00001", "DOI": "10.0000/demo-a"},
+      "referenceCount": 3, "citationCount": 2
+    },
+    "ARXIV:0000.00002": {
+      "paperId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "title": "Synthetic seed B", "year": 2025,
+      "externalIds": {"ArXiv": "0000.00002"}, "referenceCount": 1, "citationCount": 1
+    }
+  },
+  "relations": {
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+      "references": [
+        {"citedPaper": {"paperId": "cccccccccccccccccccccccccccccccccccccccc", "title": "Shared synthetic reference", "abstract": "Example abstract."}},
+        {"citedPaper": {"paperId": null, "title": "Unresolved synthetic reference"}},
+        {"citedPaper": {"paperId": "cccccccccccccccccccccccccccccccccccccccc", "abstract": null}}
+      ],
+      "citations": [
+        {"citingPaper": {"paperId": "dddddddddddddddddddddddddddddddddddddddd", "title": "Synthetic citing paper"}},
+        {"citingPaper": {"paperId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "title": "Synthetic seed B"}}
+      ]
+    },
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+      "references": [{"citedPaper": {"paperId": "cccccccccccccccccccccccccccccccccccccccc", "title": "Shared synthetic reference"}}],
+      "citations": [{"citingPaper": {"paperId": "dddddddddddddddddddddddddddddddddddddddd", "title": "Synthetic citing paper"}}]
+    }
+  }
+}
