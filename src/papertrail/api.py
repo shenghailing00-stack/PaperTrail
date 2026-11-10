@@ -25,6 +25,24 @@ MAX_ATTEMPTS = 3
 MAX_RETRY_WAIT = 10
 
 
+class RequestBudget:
+    """One collection's shared budget; retries consume attempts too."""
+    def __init__(self, limit):
+        self.limit = limit
+        self.used = 0
+
+    def take(self):
+        if self.used >= self.limit:
+            return False
+        self.used += 1
+        return True
+
+
+def budget_error():
+    return {"status": "error", "stop_run": True, "response": None,
+            "error": {"kind": "request_budget", "message": "Collection request budget exhausted; saved pages retained."}}
+
+
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -86,6 +104,8 @@ def transient_ssl_error(error):
 
 class S2Client:
     """One sequential session, sharing its pacing clock across endpoints/retries."""
+    source_key = "semantic-scholar"
+    source = "Semantic Scholar"
 
     def __init__(self, api_key=None):
         self.api_key = api_key
@@ -94,6 +114,7 @@ class S2Client:
         if api_key:
             self.session.headers["x-api-key"] = api_key
         self.last_started = None
+        self.budget = None  # TASK-001 retains its original per-endpoint bounds.
 
     def metadata(self, paper_id):
         return self.request_json(
@@ -117,6 +138,9 @@ class S2Client:
             "attempts": [], "response": None, "stop_run": False,
         }
         for attempt in range(1, MAX_ATTEMPTS + 1):
+            if self.budget is not None and not self.budget.take():
+                result.update(budget_error(), fetched_at=utc_now())
+                return redact(result, self.api_key)
             if self.last_started is not None:
                 time.sleep(max(0, MIN_INTERVAL - (time.monotonic() - self.last_started)))
             self.last_started = time.monotonic()

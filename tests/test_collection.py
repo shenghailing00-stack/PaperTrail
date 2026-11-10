@@ -384,6 +384,7 @@ def test_cli_bad_database_and_parameters(tmp_path, capsys):
 
 def test_external_alias_conflict_retains_mapping_and_requires_direct_confirmation(store, client):
     alias = "DOI:10.0000/shared"
+    store.bind_source(client.source_key, client.source)
     with store.connection:
         store.upsert_paper({"paperId": A}, api.utc_now(), metadata=True, alias=alias)
         store.upsert_paper({"paperId": B, "externalIds": {"DOI": "10.0000/shared"}},
@@ -527,11 +528,26 @@ def test_cli_report_redacts_key_in_inputs_errors_and_alias_conflicts(tmp_path, m
     assert secret not in output and "[REDACTED]" in output
     report = json.loads(output)
     assert report["alias_conflicts"] and report["seeds"][0]["citations"]["error_kind"] == "ssl"
+    with PaperStore.open_readonly(tmp_path / "safe.db") as reader:
+        row = reader.connection.execute("SELECT inputs_json, report_json FROM collection_runs").fetchone()
+        assert secret not in " ".join(row)
+    # A pre-existing/externally supplied report must also be redacted on display,
+    # without rewriting its persisted contents through the read-only path.
+    report["legacy_note"] = secret
+    with sqlite3.connect(tmp_path / "safe.db") as db:
+        db.execute("UPDATE collection_runs SET inputs_json = ?, report_json = ?",
+                   (json.dumps([identifier]), json.dumps(report)))
+    before = (tmp_path / "safe.db").read_bytes()
+    assert cli.main(["--db", str(tmp_path / "safe.db"), "--show-run", str(report["run_id"])]) == 0
+    shown = capsys.readouterr().out
+    assert secret not in shown and "[REDACTED]" in shown
+    assert (tmp_path / "safe.db").read_bytes() == before
 
 
 def test_legacy_database_migration_preserves_data_and_reconfirms_external_alias(tmp_path, client):
     path = tmp_path / "legacy.db"
     with PaperStore(path) as db:
+        db.bind_source(client.source_key, client.source)
         with db.connection:
             db.upsert_paper(client.data["metadata"][SEEDS[0]], api.utc_now(), metadata=True, alias=SEEDS[0])
             state = new_state(A, "references", 10000)

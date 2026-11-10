@@ -1,9 +1,11 @@
 # PaperTrail
 A Python tool for exploring academic citation networks, analyzing research literature, and building explainable reading lists.
 
-当前实现 **TASK-001 API 验证**及 **TASK-002A 一层引用采集与 SQLite 持久化**，
+当前实现 **TASK-001 API 验证**、**TASK-002A 一层引用采集与 SQLite 持久化**及
+**TASK-002A.1 采集安全与样本归属**，
 尚未实现图分析或 UI。范围见 [项目简报](docs/PROJECT_BRIEF.md)，证据见
-[TASK-001](tasks/TASK-001-API-SPIKE.md) 和 [TASK-002A](tasks/TASK-002A-COLLECTION-STORE.md)。
+[TASK-001](tasks/TASK-001-API-SPIKE.md)、[TASK-002A](tasks/TASK-002A-COLLECTION-STORE.md)
+和 [TASK-002A.1](tasks/TASK-002A.1-SAFETY-SAMPLES.md)。
 
 ## Windows / Python 环境
 
@@ -27,6 +29,8 @@ python -m venv .venv
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/collect.py ARXIV:0000.00001 ARXIV:0000.00002 --offline-fixture tests/fixtures/s2_collection.json --db papertrail-demo.db --page-size 2
+# 按输出的 run_id 查看样本；下例的 1 请替换成实际 run_id。不会联网。
+.\.venv\Scripts\python.exe scripts/collect.py --db papertrail-demo.db --show-run 1
 # 原样再运行一次：所有方向 cache_hit 为 true，network_citation_records 为 0。
 .\.venv\Scripts\python.exe scripts/collect.py ARXIV:0000.00001 ARXIV:0000.00002 --offline-fixture tests/fixtures/s2_collection.json --db papertrail-demo.db --page-size 2
 ```
@@ -34,6 +38,12 @@ python -m venv .venv
 `--offline-fixture` 不创建 HTTP 客户端、不读取 API Key；fixture 缺失条目也不会回退到网络。
 输出 `mode=offline_fixture`，数据库来源注明合成数据。输入支持 1–3 个带前缀外部 ID
 或 S2 paperId；暂不提供标题检索。必须显式传入 `--db`，其父目录须已存在。
+每次采集（包括完全命中缓存）都有独立 run_id；`--show-run` 读取该次样本成员、配置、
+来源、原始计数和完成报告，不能与 seeds/fixture/refresh 一起使用。
+此入口使用独立的 `PaperStore.open_readonly(path)`，通过 SQLite URI `mode=ro` 打开，
+不运行普通构造函数，不建表、不迁移、不更新状态，也不创建不存在的 DB。
+缺失文件、0 字节文件、不相关 SQLite 库、旧/不完整 schema 分别提示原因并退出 1；
+参数组合错误退出 2。旧库需由采集流程显式升级，只读查看不会替它升级。
 
 以下为**需另行授权后才执行的真实采集命令**，TASK-002A 未执行：
 
@@ -53,9 +63,9 @@ JSON 总状态 `ok` 表示全部 API 报告末页，`bounded` 表示存在预算
 
 | 路径 | 职责 |
 |---|---|
-| `src/papertrail/api.py` | 共用 HTTP 客户端、ID 检查、单页请求、分页协议校验 |
-| `src/papertrail/store.py` | SQLite schema、upsert、别名、事务、查询缓存 |
-| `src/papertrail/collector.py` | 规范化种子、一层扩展、配额、缓存与续传 |
+| `src/papertrail/api.py` | 共用 HTTP 客户端、ID 检查、单页请求、分页协议校验、跨请求重试预算 |
+| `src/papertrail/store.py` | SQLite、别名、事务、缓存记录归属、样本查询与来源绑定 |
+| `src/papertrail/collector.py` | 规范化种子、一层扩展、配额、缓存与续传、run 生命周期 |
 | `src/papertrail/cli.py` / `scripts/collect.py` | 参数、报告、合成 fixture 适配器 / 直接运行入口 |
 
 | 表 | 键与内容 |
@@ -63,7 +73,11 @@ JSON 总状态 `ok` 表示全部 API 报告末页，`bounded` 表示存在预算
 | `papers` | `paper_id` 主键；title/year/authors_json/abstract/url/external_ids_json/reference_count/citation_count 可空；source、updated_at、独立的 metadata_fetched_at |
 | `paper_aliases` | `alias` 主键，`paper_id` 外键；`confirmed` 记录直接确认，`conflicted` 标记附带 ID 冲突 |
 | `citation_edges` | `(citing_paper_id, cited_paper_id)` 联合主键，双方外键；source、fetched_at |
-| `fetch_state` | `(seed_id, direction)` 联合主键；status、next_offset、raw_count、unresolved_count、missing_abstract_count、complete/truncated、target_limit、error_kind/message、expected_count、warning_kind/message、started_at/updated_at |
+| `fetch_state` | `(seed_id, direction)` 联合主键；原计数/状态/时间字段保留，sample_run_id 指向可复用记录所在 run，sample_digest 校验其内容 |
+| `dataset_identity` | 单行数据库身份：source_key、source；真实 API 与 fixture 指纹严格区分 |
+| `collection_runs` | run_id 主键；输入、预算/配置、来源、开始/结束时间、状态、脱敏报告 |
+| `run_seeds` | `(run_id, seed_id)` 主键；规范化种子及其被引配额 |
+| `run_items` | `(run_id, seed_id, direction, ordinal)` 主键；每条原始关系记录的邻居 ID（可空）、摘要缺失标记、实际获取时间 |
 
 时间使用 UTC ISO 8601。作者及外部 ID 用 JSON 文本保存，避免为本任务增加多张子表。
 元数据 upsert 的 null、空字符串（含纯空白）、空列表和空字典不覆盖已知字段，数值 0
@@ -80,6 +94,65 @@ canonical paperId 不允许映射到另一 paperId；`--refresh` 重新确认不
 每一页的论文、引用边和分页状态在一个事务中提交。后续 API 失败保留已提交页；
 SQL 写入失败整页回滚。元数据请求失败且没有 paperId 时只在本次报告记错，不能建立
 有效的种子外键。数据库为成功观察的累计集合；刷新不会删除历史边，也不是快照替换。
+
+### 当前样本与历史数据
+
+后续分析可复用独立只读入口（需在项目 Python 导入环境中运行）：
+
+```python
+from papertrail.store import PaperStore
+
+with PaperStore.open_readonly("papertrail-demo.db") as reader:
+    sample = reader.get_sample(1)  # 替换为实际 run_id
+```
+
+只读连接持有一次读取事务，正常使用 SQLite 锁和 WAL 一致性机制，没有使用 immutable=1。
+关闭 reader 后结束快照；期间其他进程新提交的数据需重新打开 reader 才能读取。
+`get_sample(run_id)`（CLI 对应 `--show-run`）返回该 run 的
+`paper_ids`、`edges`、`record_counts` 和采集报告。节点为规范化种子与本次记录中的
+有效邻居，边只从本次原始记录按 citing → cited 构建，按 ID/有序端点去重。
+**不能从 citation_edges 选出“两端均在样本节点中”的边替代本次样本**，那会混入历史关系。
+
+`run_items` 保留重复项和不可解析项，所以 raw_records 与唯一节点/边数不同；缺 ID 行
+不会成为节点或边，仍占预算。报告的 `sample_totals` 是当前 run，`database_totals`
+是历史累计，二者并列显示。两颗种子之间重复观察到同一条边时，原始记录各计一次，边只计一次。
+
+缓存命中复制已保存的逐条记录前缀；续传先复制前缀，再逐页追加新记录。每页的样本记录、
+论文、边和游标同事务提交；旧 run 不随刷新、后续续传、种子变化或预算缩减而改变。
+失败/中断的 run 仅包含已提交页与已解析种子，skipped 方向不借用旧缓存边。
+查看样本时须检查 status 和报告里的方向状态；`bounded`、`incomplete`、`interrupted`
+不能解释成完整覆盖。进程硬终止可能留下 running，仍只能读取已提交的数据。
+缓存 checkpoint 同事务保存逐条记录的 SHA-256 摘要；复用前同时校验数量、序号和内容，
+删除记录或保持数量不变却替换 ID/缺失标记等变化会使缓存失效并安全重采。
+旧 checkpoint 没有摘要时不自动为未知内容补签，将重采一次；只读查看已有 run 不要求
+这个新缓存字段，也不会添加它。摘要用于检测记录变化，不是防止同时修改记录和摘要的数字签名。
+
+这里固定的是**样本成员归属**，没有制作论文元数据的历史版本；papers 的标题、摘要、
+全局被引数等仍是最新已知值。采集配置和关系记录获取时间已保存，offset 分页仍不是数据源快照。
+
+### 参数和请求安全
+
+| 参数 | 默认 | 允许范围 |
+|---|---:|---|
+| `--citation-budget` | 150 | 0..1000（全局原始被引记录） |
+| `--reference-cap` | 10000 | 1..10000（每篇种子原始参考记录） |
+| `--page-size` | 100 | 1..1000 |
+| `--request-budget` | 100 | 1..300（本轮请求尝试总数） |
+| `--cache-ttl-hours` | 168 | 0..8760 |
+
+CLI 在创建客户端/打开数据库前校验；库入口也校验。请求预算覆盖种子查询、两种方向、
+所有分页和重试；每次 HTTP 尝试前扣减，命中缓存不消耗。fixture 同样统计模拟请求，
+`request_attempts` 在离线模式不是实际 HTTP 数。耗尽时停止后续请求、保存部分样本，
+返回 request_budget 错误、incomplete 和退出码 1。小页/大上限可能先耗尽请求预算；
+额度不是完整采集的保证，也不是跨进程累计配额或严格墙钟时限。
+
+### 真实与模拟来源隔离
+
+新数据库绑定 Semantic Scholar 身份或 `fixture:<文件字节 SHA-256>`，两种模式不能
+共用数据库；不同内容的 fixture 也不能命中彼此缓存。即使 paperId 相同也会在查询前
+拒绝混用，必须另选 DB。复制同一 fixture 到不同路径不改变指纹；改内容/格式会改变指纹。
+所有 fixture run 和论文/边始终标为 Synthetic offline fixture；读取 run 使用保存的来源，
+不会因为没有传 `--offline-fixture` 而改称真实数据。错误不会自动清库、重新贴标签或回退联网。
 
 ### 预算、分页和缓存
 
@@ -116,11 +189,13 @@ SQL 写入失败整页回滚。元数据请求失败且没有 paperId 时只在�
 没有重新联网核验协议、条款或额度，也没有进行真实分页测试。当前保留论文、图边和
 缺失统计，不持久化逐条 contexts/intents 等证据字段；TASK-001 原始报告功能仍可用。
 
-旧 TASK-002A 数据库打开时会增量补充别名确认/冲突和质量警告字段，保留论文、边及
-进度。旧外部别名没有直接确认来源，首次作为输入时需重新确认；旧 count_mismatch
-错误不自动改成成功，将重取一次后按新规则保存。暂缓事项见任务记录“后续工作”：
-极端参数/请求预算保护、fixture/真实 DB 严格隔离尚未实现，须在真实采集前解决；
-样本归属 D1 须在 TASK-002B 前解决。以上限制不因本轮修复而视为完成。
+旧 TASK-002A 数据库打开时增量添加缺失字段和表，保留论文、边及进度，不反推或补造旧 run。
+来源全部记录为 Semantic Scholar 的旧库可按该已有声明升级绑定；无法追溯来源的混合/
+未知来源库和没有指纹的旧模拟库不自动认领，请保留历史库并使用新 DB。系统不能鉴定此前
+被错误标注为真实来源的数据，旧来源标签必须可信。旧外部别名无直接确认来源时仍需确认。
+旧关系缓存没有逐条样本归属，即使 TTL 有效也需重取一次，不能把历史并集当作它的样本；
+可验证的元数据缓存仍可复用。升级后继续使用原有 TTL/截断缓存/续传规则。
+真实分页及 DOI 路径验证仍待授权，尚未开始 NetworkX 分析。
 
 ## TASK-001：API Key 与实验脚本
 
@@ -208,7 +283,14 @@ SSL/超时/连接错误、坏响应/部分成功、写盘失败。网络及等�
 
 TASK-002A 新增 `tests/test_collection.py` 及 `tests/fixtures/s2_collection.json`，
 覆盖分页/预算、SQLite 事务和重开、跨种子和外部 ID 去重、缓存/刷新、限流与 SSL
-失败恢复及独立审查回归。目前 **92 项离线测试通过**，其中 TASK-001 原有 31 项测试未修改。
+失败恢复及独立审查回归。TASK-002A.1 新增 `tests/test_collection_runs.py`，覆盖样本归属、
+预算变化、缓存复制、SQL 回滚、来源隔离、请求限制及数据库升级，初版 **119 项离线测试通过**，
+包括 TASK-001 的 31 项和 TASK-002A 的 61 项；原有两处手工插入 fixture 的测试显式绑定来源，
+保留其业务断言，避免把合成测试数据误标为真实数据。
+最终审查补充真正只读、WAL 快照、异常数据库、记录篡改、旧非零游标和参数/报告脱敏回归，
+当前总计 **134 项测试**。--show-run 已验证文件字节与 SQL 内容不变，SQL 跟踪无写操作，
+只读连接拒绝 UPDATE。CLI 参数错误及只读报告按当前环境中的 API Key 脱敏；这两个显示路径
+可能读取环境变量以隐藏密钥，但不会因此创建 HTTP 客户端或联网。
 所有数据库测试使用 pytest 临时目录。如果本机旧 `.pytest_cache` 不可写，可指定新的
 忽略目录：`python -m pytest -q -o cache_dir=output/task002a-pytest-cache`。
 

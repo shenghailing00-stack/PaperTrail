@@ -1,13 +1,24 @@
 """SQLite persistence. A page and its checkpoint always commit together."""
 
 from datetime import datetime, timezone
+import hashlib
 import json
+from pathlib import Path
 import sqlite3
 
-from .api import paper_id_valid
+from .api import paper_id_valid, utc_now
 
 
 SOURCE = "Semantic Scholar"
+FIXTURE_SOURCE = "Synthetic offline fixture (Semantic Scholar schema)"
+
+
+class SourceMismatch(ValueError):
+    """A database cannot mix datasets or infer an unknown fixture's identity."""
+
+
+class ReadOnlyStoreError(ValueError):
+    """Safe, user-facing error for read-only access; never contains file contents."""
 
 
 def normalize_alias(value):
@@ -27,6 +38,54 @@ def fresh(timestamp, ttl_seconds):
 
 
 class PaperStore:
+    @classmethod
+    def open_readonly(cls, path):
+        """Open one read transaction without calling the writable constructor.
+
+        URI mode=ro enforces read-only access in SQLite; normal WAL/locking rules
+        remain enabled. Closing the store ends the snapshot. No migration runs.
+        """
+        database = Path(path).resolve()
+        if not database.is_file():
+            raise ReadOnlyStoreError("Database file does not exist or is not a regular file; nothing was created.")
+        if database.stat().st_size == 0:
+            raise ReadOnlyStoreError("Database file is empty (0 bytes); read-only access will not initialize it.")
+        store = cls.__new__(cls)
+        connection = None
+        try:
+            connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
+            connection.row_factory = sqlite3.Row
+            store.connection = connection
+            connection.execute("BEGIN")  # One consistent snapshot across all sample queries.
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            if not {"papers", "citation_edges", "paper_aliases", "fetch_state"} <= tables:
+                raise ReadOnlyStoreError("Not a PaperTrail database; no tables were added.")
+            required = {
+                "papers": {"paper_id"},
+                "paper_aliases": {"alias", "paper_id", "confirmed", "conflicted"},
+                "dataset_identity": {"singleton", "source", "source_key"},
+                "collection_runs": {"run_id", "source", "source_key", "inputs_json", "config_json",
+                                    "status", "started_at", "finished_at", "report_json"},
+                "run_seeds": {"run_id", "seed_id", "citation_quota"},
+                "run_items": {"run_id", "seed_id", "direction", "ordinal", "other_paper_id",
+                              "missing_abstract", "fetched_at"},
+            }
+            for table, columns in required.items():
+                existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+                if not columns <= existing:
+                    raise ReadOnlyStoreError(
+                        "Old or incomplete PaperTrail schema; read-only access does not migrate it. "
+                        "Use the collection workflow to upgrade and create a traceable run.")
+            identity = connection.execute("SELECT source FROM dataset_identity WHERE singleton = 1").fetchone()
+            store.source = identity["source"] if identity else None
+            return store
+        except BaseException as error:
+            if connection is not None:
+                connection.close()
+            if isinstance(error, sqlite3.Error):
+                raise ReadOnlyStoreError("Cannot read SQLite database; check file format, access permissions and locks.") from None
+            raise
+
     def __init__(self, path, *, source=SOURCE):
         self.source = source
         self.connection = sqlite3.connect(path)
@@ -62,13 +121,40 @@ class PaperStore:
                 started_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 PRIMARY KEY(seed_id, direction)
             );
+            CREATE TABLE IF NOT EXISTS dataset_identity (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                source_key TEXT NOT NULL, source TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS collection_runs (
+                run_id INTEGER PRIMARY KEY,
+                source_key TEXT NOT NULL, source TEXT NOT NULL,
+                inputs_json TEXT NOT NULL, config_json TEXT NOT NULL,
+                started_at TEXT NOT NULL, finished_at TEXT,
+                status TEXT NOT NULL, report_json TEXT
+            );
+            CREATE TABLE IF NOT EXISTS run_seeds (
+                run_id INTEGER NOT NULL REFERENCES collection_runs(run_id),
+                seed_id TEXT NOT NULL REFERENCES papers(paper_id),
+                citation_quota INTEGER NOT NULL,
+                PRIMARY KEY(run_id, seed_id)
+            );
+            CREATE TABLE IF NOT EXISTS run_items (
+                run_id INTEGER NOT NULL, seed_id TEXT NOT NULL, direction TEXT NOT NULL,
+                ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                other_paper_id TEXT REFERENCES papers(paper_id),
+                missing_abstract INTEGER NOT NULL, fetched_at TEXT NOT NULL,
+                PRIMARY KEY(run_id, seed_id, direction, ordinal),
+                FOREIGN KEY(run_id, seed_id) REFERENCES run_seeds(run_id, seed_id),
+                CHECK(direction IN ('references', 'citations'))
+            );
         """)
         # Additive migration for TASK-002A databases created before review fixes.
         additions = {
             "paper_aliases": {"confirmed": "INTEGER NOT NULL DEFAULT 0",
                               "conflicted": "INTEGER NOT NULL DEFAULT 0"},
             "fetch_state": {"expected_count": "INTEGER", "warning_kind": "TEXT",
-                            "warning_message": "TEXT"},
+                            "warning_message": "TEXT", "sample_run_id": "INTEGER REFERENCES collection_runs(run_id)",
+                            "sample_digest": "TEXT"},
         }
         with self.connection:
             for table, columns in additions.items():
@@ -78,12 +164,116 @@ class PaperStore:
                         self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
             # Legacy external aliases have no evidence of direct confirmation.
             self.connection.execute("UPDATE paper_aliases SET confirmed = 1 WHERE alias = paper_id")
+        identity = self.connection.execute("SELECT source FROM dataset_identity WHERE singleton = 1").fetchone()
+        if identity:
+            self.source = identity["source"]
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
         self.connection.close()
+
+    def bind_source(self, source_key, source):
+        """Check identity before cache use or HTTP; never relabel historical rows."""
+        with self.connection:
+            identity = self.connection.execute("SELECT * FROM dataset_identity WHERE singleton = 1").fetchone()
+            sources = {row[0] for row in self.connection.execute(
+                "SELECT source FROM papers UNION SELECT source FROM citation_edges")}
+            if identity:
+                if identity["source_key"] != source_key or identity["source"] != source or sources - {source}:
+                    raise SourceMismatch("Dataset identity mismatch; use a separate database.")
+            else:
+                # Old real-only DBs have a named source; old fixture DBs lack a fingerprint.
+                if sources and (source_key != "semantic-scholar" or sources != {SOURCE}):
+                    raise SourceMismatch("Legacy dataset identity is unknown or synthetic; keep it for history and use a new database.")
+                self.connection.execute("INSERT INTO dataset_identity VALUES (1, ?, ?)", (source_key, source))
+        self.source = source
+
+    def start_run(self, inputs, config, started_at):
+        identity = self.connection.execute("SELECT * FROM dataset_identity WHERE singleton = 1").fetchone()
+        with self.connection:
+            cursor = self.connection.execute("""
+                INSERT INTO collection_runs (source_key, source, inputs_json, config_json, started_at, status)
+                VALUES (?, ?, ?, ?, ?, 'running')
+            """, (identity["source_key"], identity["source"], json.dumps(inputs), json.dumps(config), started_at))
+        return cursor.lastrowid
+
+    def finish_run(self, run_id, status, report=None):
+        with self.connection:
+            self.connection.execute("""
+                UPDATE collection_runs SET status = ?, finished_at = ?, report_json = ? WHERE run_id = ?
+            """, (status, utc_now(), json.dumps(report) if report is not None else None, run_id))
+
+    def add_run_seed(self, run_id, seed_id, quota):
+        with self.connection:
+            self.connection.execute("""INSERT INTO run_seeds VALUES (?, ?, ?)
+                ON CONFLICT(run_id, seed_id) DO UPDATE SET citation_quota = excluded.citation_quota
+            """, (run_id, seed_id, quota))
+
+    def has_sample(self, state):
+        if not state or state.get("sample_run_id") is None:
+            return False
+        if self.connection.execute("SELECT 1 FROM run_seeds WHERE run_id = ? AND seed_id = ?",
+                                   (state["sample_run_id"], state["seed_id"])).fetchone() is None:
+            return False
+        row = self.connection.execute("""
+            SELECT count(*) AS n, min(ordinal) AS lo, max(ordinal) AS hi FROM run_items
+            WHERE run_id = ? AND seed_id = ? AND direction = ?
+        """, (state["sample_run_id"], state["seed_id"], state["direction"])).fetchone()
+        return (row["n"] == state["raw_count"]
+                and (row["n"] == 0 or (row["lo"] == 0 and row["hi"] == row["n"] - 1))
+                and state.get("sample_digest") == self._sample_digest(state))
+
+    def _sample_digest(self, state):
+        rows = self.connection.execute("""
+            SELECT ordinal, other_paper_id, missing_abstract, fetched_at FROM run_items
+            WHERE run_id = ? AND seed_id = ? AND direction = ? ORDER BY ordinal
+        """, (state["sample_run_id"], state["seed_id"], state["direction"]))
+        content = json.dumps([tuple(row) for row in rows], separators=(",", ":"))
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    def copy_sample(self, state, run_id):
+        """Caller commits the copied prefix and new checkpoint in one transaction."""
+        self.connection.execute("""
+            INSERT INTO run_items SELECT ?, seed_id, direction, ordinal, other_paper_id, missing_abstract, fetched_at
+            FROM run_items WHERE run_id = ? AND seed_id = ? AND direction = ?
+        """, (run_id, state["sample_run_id"], state["seed_id"], state["direction"]))
+        state["sample_run_id"] = run_id
+
+    def get_sample(self, run_id):
+        """Exact membership for one run, never an induced graph of historical edges.
+
+        Paper attributes remain in papers as latest-known metadata, not snapshots.
+        Running/interrupted samples contain only committed pages and resolved seeds.
+        """
+        run = self.connection.execute("SELECT * FROM collection_runs WHERE run_id = ?", (run_id,)).fetchone()
+        if run is None:
+            raise ValueError("Unknown collection run.")
+        seeds = [dict(row) for row in self.connection.execute(
+            "SELECT seed_id, citation_quota FROM run_seeds WHERE run_id = ? ORDER BY rowid", (run_id,))]
+        papers = {seed["seed_id"] for seed in seeds}
+        edges = set()
+        counts = {(seed["seed_id"], direction): {"seed_id": seed["seed_id"], "direction": direction,
+                  "raw_count": 0, "unresolved_count": 0, "missing_abstract_count": 0}
+                  for seed in seeds for direction in ("references", "citations")}
+        for row in self.connection.execute("SELECT * FROM run_items WHERE run_id = ? ORDER BY seed_id, direction, ordinal", (run_id,)):
+            key = (row["seed_id"], row["direction"])
+            count = counts[key]
+            count["raw_count"] += 1
+            count["missing_abstract_count"] += row["missing_abstract"]
+            other = row["other_paper_id"]
+            if other is None:
+                count["unresolved_count"] += 1
+            else:
+                papers.add(other)
+                edges.add((row["seed_id"], other) if row["direction"] == "references" else (other, row["seed_id"]))
+        return {"run_id": run_id, "source": run["source"], "source_key": run["source_key"],
+                "status": run["status"], "started_at": run["started_at"], "finished_at": run["finished_at"],
+                "inputs": json.loads(run["inputs_json"]), "config": json.loads(run["config_json"]),
+                "seeds": seeds, "paper_ids": sorted(papers), "edges": [list(edge) for edge in sorted(edges)],
+                "record_counts": list(counts.values()),
+                "report": json.loads(run["report_json"]) if run["report_json"] else None}
 
     def lookup(self, alias):
         row = self.connection.execute("""
@@ -152,6 +342,8 @@ class PaperStore:
         return dict(row) if row else None
 
     def save_state(self, state):
+        if state.get("sample_run_id") is not None:
+            state["sample_digest"] = self._sample_digest(state)
         columns = ", ".join(state)
         updates = ", ".join(f"{key} = excluded.{key}" for key in state if key not in {"seed_id", "direction"})
         self.connection.execute(
@@ -164,11 +356,22 @@ class PaperStore:
         seed, direction = state["seed_id"], state["direction"]
         nested = "citedPaper" if direction == "references" else "citingPaper"
         with self.connection:
-            for row in rows:
+            for index, row in enumerate(rows):
                 paper = row.get(nested) if isinstance(row, dict) else None
+                other = paper.get("paperId") if isinstance(paper, dict) else None
+                abstract = paper.get("abstract") if isinstance(paper, dict) else None
+                if state.get("sample_run_id") is not None:
+                    # Valid papers must exist before their membership foreign key is inserted.
+                    if paper_id_valid(other):
+                        self.upsert_paper(paper, state["updated_at"])
+                    self.connection.execute("INSERT INTO run_items VALUES (?, ?, ?, ?, ?, ?, ?)", (
+                        state["sample_run_id"], seed, direction, state["raw_count"] - len(rows) + index,
+                        other if paper_id_valid(other) else None,
+                        int(not isinstance(abstract, str) or not abstract.strip()), state["updated_at"]))
                 if not isinstance(paper, dict) or not paper_id_valid(paper.get("paperId")):
                     continue
-                self.upsert_paper(paper, state["updated_at"])
+                if state.get("sample_run_id") is None:
+                    self.upsert_paper(paper, state["updated_at"])
                 other = paper["paperId"]
                 citing, cited = (seed, other) if direction == "references" else (other, seed)
                 self.connection.execute("""

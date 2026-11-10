@@ -1,10 +1,27 @@
 """Collect only seed neighbors, using deterministic shared citation quotas."""
 
-from .api import input_id, paper_id_valid, parse_page, redact, utc_now
+from .api import RequestBudget, input_id, paper_id_valid, parse_page, redact, utc_now
 from .store import fresh, normalize_alias
 
 
 DEFAULT_TTL = 7 * 24 * 60 * 60
+DEFAULT_REQUEST_BUDGET = 100
+
+
+def validate_options(inputs, citation_budget, reference_cap, page_size, ttl, request_budget):
+    if not 1 <= len(inputs) <= 3:
+        raise ValueError("Provide 1 to 3 seed identifiers.")
+    for name, value, low, high in (
+        ("citation_budget", citation_budget, 0, 1000),
+        ("reference_cap", reference_cap, 1, 10000),
+        ("page_size", page_size, 1, 1000),
+        ("request_budget", request_budget, 1, 300),
+    ):
+        if type(value) is not int or not low <= value <= high:
+            raise ValueError(f"{name} must be an integer in {low}..{high}.")
+    if type(ttl) not in (int, float) or not 0 <= ttl <= 365 * 86400:
+        raise ValueError("Cache TTL must be between 0 and 365 days.")
+    return [input_id(normalize_alias(value)) for value in inputs]
 
 
 def new_state(seed, direction, limit):
@@ -13,7 +30,7 @@ def new_state(seed, direction, limit):
                 raw_count=0, unresolved_count=0, missing_abstract_count=0,
                 complete=0, truncated=0, target_limit=limit, error_kind=None,
                 error_message=None, expected_count=None, warning_kind=None,
-                warning_message=None, started_at=now, updated_at=now)
+                warning_message=None, sample_run_id=None, started_at=now, updated_at=now)
 
 
 def fail_state(state, kind, message):
@@ -21,20 +38,24 @@ def fail_state(state, kind, message):
                  error_message=message, updated_at=utc_now())
 
 
-def collect_direction(client, store, seed, direction, limit, *, page_size, ttl, refresh):
+def collect_direction(client, store, seed, direction, limit, *, page_size, ttl, refresh, run_id):
     seed_id = seed["paper_id"]
     state = store.get_state(seed_id, direction)
     cache_hit = False
-    if state and not refresh:
+    traceable = store.has_sample(state)
+    if traceable and not refresh:
         cache_hit = fresh(state["started_at"], ttl) and (
             (state["complete"] and state["raw_count"] <= limit)
             or (state["status"] == "truncated" and state["target_limit"] == limit)
         )
     if cache_hit:
+        with store.connection:
+            store.copy_sample(state, run_id)
+            store.save_state(state)
         return {**state, "cache_hit": True, "network_raw_records": 0, "stop_run": False}
 
     # Resume only a recent, known cursor. Smaller quotas and refreshes start over.
-    resume = (state and not refresh and fresh(state["started_at"], ttl)
+    resume = (traceable and not refresh and fresh(state["started_at"], ttl)
               and state["next_offset"] is not None and state["raw_count"] <= limit
               and limit >= state["target_limit"])
     if not resume:
@@ -44,6 +65,10 @@ def collect_direction(client, store, seed, direction, limit, *, page_size, ttl, 
                  expected_count=seed.get("reference_count" if direction == "references" else "citation_count"),
                  updated_at=utc_now())
     with store.connection:
+        if resume:
+            store.copy_sample(state, run_id)
+        else:
+            state["sample_run_id"] = run_id
         store.save_state(state)
     network_rows = 0
     stop_run = False
@@ -91,21 +116,36 @@ def collect_direction(client, store, seed, direction, limit, *, page_size, ttl, 
 
 
 def collect(client, store, inputs, *, citation_budget=150, reference_cap=10000,
-            page_size=100, ttl=DEFAULT_TTL, refresh=False):
+            page_size=100, ttl=DEFAULT_TTL, refresh=False, request_budget=DEFAULT_REQUEST_BUDGET):
+    inputs = validate_options(inputs, citation_budget, reference_cap, page_size, ttl, request_budget)
+    store.bind_source(client.source_key, client.source)
+    client.budget = RequestBudget(request_budget)
+    config = dict(citation_budget=citation_budget, reference_cap=reference_cap, page_size=page_size,
+                  ttl=ttl, refresh=refresh, request_budget=request_budget)
+    run_id = store.start_run(redact(inputs, getattr(client, "api_key", None)), config, utc_now())
+    try:
+        report = _collect(client, store, inputs, run_id=run_id, citation_budget=citation_budget,
+                          reference_cap=reference_cap, page_size=page_size, ttl=ttl, refresh=refresh)
+        report.update(run_id=run_id, source_key=client.source_key, request_attempts=client.budget.used,
+                      request_budget=request_budget)
+        sample = store.get_sample(run_id)
+        report["sample_totals"] = {"papers": len(sample["paper_ids"]), "citation_edges": len(sample["edges"]),
+                                   "raw_records": sum(row["raw_count"] for row in sample["record_counts"]),
+                                   "unresolved_records": sum(row["unresolved_count"] for row in sample["record_counts"])}
+        report = redact(report, getattr(client, "api_key", None))
+        store.finish_run(run_id, report["status"], report)
+        return report
+    except BaseException:
+        store.finish_run(run_id, "interrupted")
+        raise
+
+
+def _collect(client, store, inputs, *, run_id, citation_budget, reference_cap, page_size, ttl, refresh):
     """Resolve 1–3 inputs, deduplicate seeds, then expand each seed only once.
 
     Quotas cover the whole cached/resumed sample, not an additional budget per
     invocation. Unused shares are not redistributed. Old DB observations remain.
     """
-    if not 1 <= len(inputs) <= 3:
-        raise ValueError("Provide 1 to 3 seed identifiers.")
-    if type(citation_budget) is not int or citation_budget < 0:
-        raise ValueError("citation_budget must be a nonnegative integer.")
-    if type(reference_cap) is not int or reference_cap < 1:
-        raise ValueError("reference_cap must be a positive integer.")
-    if type(page_size) is not int or not 1 <= page_size <= 1000 or ttl < 0:
-        raise ValueError("page_size must be in 1..1000; ttl must be nonnegative.")
-    inputs = [input_id(normalize_alias(value)) for value in inputs]
     report = {"source": store.source, "status": "ok", "citation_budget": citation_budget,
               "inputs": [], "seeds": [], "network_citation_records": 0}
     seeds = {}
@@ -148,7 +188,11 @@ def collect(client, store, inputs, *, citation_budget=150, reference_cap=10000,
                 report["inputs"][-1]["alias_reassigned_from"] = previous_id
         seeds[paper["paper_id"]] = paper
         resolved_inputs[value] = paper
+        store.add_run_seed(run_id, paper["paper_id"], 0)
 
+    for index, paper in enumerate(seeds.values()):
+        quota = citation_budget // len(seeds) + (index < citation_budget % len(seeds))
+        store.add_run_seed(run_id, paper["paper_id"], quota)
     for index, paper in enumerate(seeds.values()):
         quota = citation_budget // len(seeds) + (index < citation_budget % len(seeds))
         entry = {"paper_id": paper["paper_id"], "citation_quota": quota}
@@ -157,7 +201,7 @@ def collect(client, store, inputs, *, citation_budget=150, reference_cap=10000,
                 entry[direction] = {"status": "skipped", "reason": stopped}
                 continue
             result = collect_direction(client, store, paper, direction, limit,
-                                       page_size=page_size, ttl=ttl, refresh=refresh)
+                                       page_size=page_size, ttl=ttl, refresh=refresh, run_id=run_id)
             entry[direction] = result
             if direction == "citations":
                 report["network_citation_records"] += result["network_raw_records"]
