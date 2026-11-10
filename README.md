@@ -2,10 +2,12 @@
 A Python tool for exploring academic citation networks, analyzing research literature, and building explainable reading lists.
 
 当前实现 **TASK-001 API 验证**、**TASK-002A 一层引用采集与 SQLite 持久化**及
-**TASK-002A.1 采集安全与样本归属**及 **TASK-002B 引用图基础分析**，
+**TASK-002A.1 采集安全与样本归属**、**TASK-002B 引用图基础分析**及
+**TASK-003 候选发现、筛选、排序与样本统计**，
 尚未实现 UI。范围见 [项目简报](docs/PROJECT_BRIEF.md)，证据见
 [TASK-001](tasks/TASK-001-API-SPIKE.md)、[TASK-002A](tasks/TASK-002A-COLLECTION-STORE.md)
-和 [TASK-002A.1](tasks/TASK-002A.1-SAFETY-SAMPLES.md)、[TASK-002B](tasks/TASK-002B-GRAPH.md)。
+和 [TASK-002A.1](tasks/TASK-002A.1-SAFETY-SAMPLES.md)、[TASK-002B](tasks/TASK-002B-GRAPH.md)、
+[TASK-003](tasks/TASK-003-DISCOVERY.md)。
 
 ## Windows / Python 环境
 
@@ -21,6 +23,100 @@ python -m venv .venv
 直接使用虚拟环境解释器，无需激活脚本或修改 PowerShell 执行策略。
 直接依赖为 requests、pytest、NetworkX；其余使用标准库。
 TASK-002B 在现有 Python 3.11.7 / NetworkX 3.6.1 环境验证。
+
+## TASK-003：候选发现、筛选、排序与样本统计
+
+使用现有 `.venv`，无需新增依赖。以下只用合成 fixture；采集命令创建/填充独立演示库，
+`discover.py` 分析命令完全只读、不联网。已有演示库可直接分析实际 `run_id`。
+
+```powershell
+.\.venv\Scripts\python.exe scripts/collect.py ARXIV:0000.00001 ARXIV:0000.00002 --offline-fixture tests/fixtures/s2_collection.json --db papertrail-discovery-demo.db --page-size 2
+# 用采集输出的实际 run_id 替换 1。
+.\.venv\Scripts\python.exe scripts/discover.py --db papertrail-discovery-demo.db --run-id 1 --top 3
+.\.venv\Scripts\python.exe scripts/discover.py --db papertrail-discovery-demo.db --run-id 1 --category shared_citing --sort-by cites_seed_count --keyword synthetic --json
+# 组合范围示例：现有 fixture 的非种子年份/全局引用量均缺失，此查询应返回空候选。
+.\.venv\Scripts\python.exe scripts/discover.py --db papertrail-discovery-demo.db --run-id 1 --year-min 2020 --year-max 2025 --citation-min 0 --citation-max 100
+```
+
+默认只显示非种子候选；`--include-seeds` 把符合筛选的种子放入独立 `seeds` 列表。
+种子没有候选类别，启用 `--category` 后即使设置 `--include-seeds` 也会被类别筛选排除。
+旧 `scripts/analyze.py` 保留 TASK-002B 的图诊断行为（包含种子的入度表），候选阅读清单应使用
+新的 `scripts/discover.py` 或下面的 `discover()` 接口。
+
+### 候选依据与排序
+
+| 类别 / 字段 | 当前 run 中的含义 |
+|---|---|
+| `shared_reference`（共同参考文献） | 至少一篇种子存在 `种子 → 该论文` |
+| `referenced_by_seed_count` / `referenced_by_seed_ids` | 引用该论文的不同种子数 / 排序后的种子 ID 列表 |
+| `shared_citing`（共同后续研究） | 至少一篇种子存在 `该论文 → 种子`；不推断发表时间一定更晚 |
+| `cites_seed_count` / `cites_seed_ids` | 该论文引用的不同种子数 / 排序后的种子 ID 列表 |
+| `local_in_degree` / `local_out_degree` | 所有已观察入边 / 出边数，不能用它们替代与种子的关系计数 |
+| `evidence` / `reason` | 类别、种子 ID、数量和边方向的结构化依据 / 可读解释 |
+
+“共同”从一篇种子起计，同一非种子论文可同时属于两类；重复观察的同一条边只计一次。
+每行保留标题、摘要、年份、来源、URL、externalIds、获取时间及全局引用量，缺失值保留 null。
+
+`--sort-by` 可取 `referenced_by_seed_count`（默认）、`cites_seed_count`、
+`global_citation_count`、`year`，均降序。只使用一个主指标，同值按 paperId 升序稳定展示，
+**paperId 次序不表示研究价值**。`rank` 使用并列名次 1、1、3；`tie_count` 是截取 top 前、
+该筛选组中同值论文的总数，包含自身。缺失值排在末尾，`rank=null, tie_count=0`，不是零分或并列测量。
+`--top` 默认 5，范围 1..100，分别限制候选列表与种子列表；JSON 同样遵循该限制。
+筛选后的总数另存于 `selection.candidate_count_before_top/seed_count_before_top`。
+
+### 筛选与统计口径
+
+- 年份与全局引用量范围均包含端点，支持只设上下限之一。启用某数值筛选时排除该字段为 null
+  的论文；未启用时保留它们。**引用量 0 是已知值，null 是未知值**。
+- `--keyword` 搜索标题或摘要的字面子串，采用 Unicode `casefold()` 忽略大小写，去除查询两端空白；
+  不分词、不解释正则表达式。可重复传入，多关键词须全部命中，每个词可命中不同字段；空关键词报错。
+- 不同筛选条件之间是 AND；重复 `--category` 是 OR。所有筛选只改变显示列表，不重建图、不改变度数。
+- `statistics` 始终统计筛选前的**当前采集样本**：唯一论文总数、种子/非种子数、两类候选数、
+  双重类别数、年份分布及年份/标题/摘要/全局引用量/链接/作者/外部 ID 的缺失数。
+  两类候选数可能重叠，不能直接相加作为候选总数。
+- 关键词统计复用查询词，逐词统计标题、摘要、任一字段命中的**论文数**；同一篇重复出现一个词仍只计一次，
+  同时命中标题和摘要也只在任一字段总数中计一次。未传关键词时返回空列表。
+  年份缺失不放进年份分布，单独计数；元数据缺失统计按唯一论文计算，与采集报告按原始记录计算的缺失数不同。
+
+### Python / 后续 Streamlit 接口
+
+在已能导入 `papertrail` 的 Python 环境中调用；仓库脚本已处理 `src` 路径，pytest 也已配置：
+
+```python
+from papertrail.discovery import discover
+
+result = discover(
+    "papertrail-discovery-demo.db", run_id=1,
+    categories=["shared_citing"], keywords=["synthetic"],
+    sort_by="cites_seed_count", include_seeds=False, top=None,
+)
+# result["candidates"] -> 候选表；result["seeds"] -> 独立种子表
+# result["statistics"] -> 当前样本统计，不随筛选缩小
+# result["sample"]["warnings"/"limitations"] -> 界面必须同时展示的说明
+```
+
+返回 `schema_version=1`，顶层字段固定为 `sample/statistics/selection/ranking/candidates/seeds`，
+可直接 JSON 序列化。Python `top=None`（默认）返回所有匹配行；CLI 默认为 5 行。
+`year_min/year_max/citation_min/citation_max` 默认 None，`keywords/categories` 为字符串列表或元组。
+如已有 `load_graph()` 返回的未修改图，可调用 `summarize_discovery(graph, **options)` 复用；
+`discover_papers/filter_papers/rank_papers/sample_statistics` 分别负责发现、筛选、排序和统计。
+`rank_papers` 拒绝把种子与非种子混排。后续界面不要移除图节点后再算原样本统计。
+
+只读入口复用 `load_graph` 的全部状态与来源校验：支持 `complete` 和合法 `budget_truncated`，
+拒绝失败、不一致或未完成样本；不读取历史 `citation_edges` 补边，不写 SQLite。
+结果保留 run 来源、采集预算、截断方向、覆盖信息与警告。元数据是读取时的**最新已知值**，
+不是 run 的历史属性快照；单层采集可能缺少非种子之间的边，局部出度也不等于完整参考文献数。
+所有数量、年份与关键词统计仅描述当前样本，不能宣称整个领域的发展趋势。
+
+退出码沿用分析入口：0 成功，1 数据库/run/样本错误，2 参数错误；错误不输出部分 JSON。
+文本输出保留终端编码并转义无法表示的字符；JSON 使用 ASCII 安全转义。CLI 仅为脱敏读取环境中的 Key，
+不创建 HTTP 客户端。纯 Python 返回数据保留原始元数据，外部展示者应自行遵守输出脱敏规则。
+
+**已验证的合成示例：** 两篇种子 A/B，共 4 篇论文。C（Shared synthetic reference）被 A/B 引用，
+`referenced_by_seed_count=2, local_in_degree=2`；D（Synthetic citing paper）引用 A/B，
+`cites_seed_count=2, local_out_degree=2`。默认候选只有 C/D，种子不进入榜单。
+年份 2024/2025 各 1 篇、缺年份 2 篇、缺摘要 3 篇；`synthetic` 在标题中命中 4 篇。
+这些都不是实际论文或真实引用量。单种子、被引预算 1 的示例可正常分析并保留 `budget_truncated` 警告。
 
 ## TASK-002B：只读引用图分析
 
@@ -383,7 +479,7 @@ TASK-002B 初版新增 **58 项离线测试**，当时 **192 项全部通过**�
 历史边排除、去重、孤立节点、自环、状态/预算/来源/端点异常、空样本、缺失 run、只读连接、
 WAL 一致性及 CLI 摘要/JSON/脱敏。SQL 授权器禁止读历史边表及写入，主动 UPDATE 被拒绝，
 分析前后 DB 字节与 SQL 内容一致。原 134 项测试未修改。
-TASK-002B.1 在原 192 项基础上按 Owner 新规则更新截断断言，新增 **19 项**，现有
+TASK-002B.1 在原 192 项基础上按 Owner 新规则更新截断断言，新增 **19 项**，当时
 **211 项全部通过**。新增覆盖 5 篇 citing / 配额 4 的截断图、状态与配额伪造拒绝、种子标记、
 逐方向 expected_count，以及不设置 PYTHONIOENCODING 时默认重定向、cp936、UTF-8 的 Unicode
 标题文本/JSON 输出。完整命令：
@@ -391,6 +487,15 @@ TASK-002B.1 在原 192 项基础上按 Owner 新规则更新截断断言，新�
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q -o cache_dir=output/task002b1-pytest-cache
 # 211 passed in 28.71s
+```
+
+TASK-003 新增 **66 项离线测试**，覆盖候选类别/重叠、种子计数与度数区别、组合筛选、null/0、
+并列与缺失排序、全样本统计、跨 run 隔离、合法截断/失败拒绝、只读与 JSON、CLI 编码及脱敏。
+原有 211 项测试文件未修改，完整回归 **277 项全部通过**；离线演示的分析前后 DB SHA-256 相同。
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q -o cache_dir=output/task003-pytest-cache
+# 277 passed in 53.23s
 ```
 
 所有数据库测试使用 pytest 临时目录。如果本机旧 `.pytest_cache` 不可写，可指定新的
