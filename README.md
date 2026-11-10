@@ -2,10 +2,10 @@
 A Python tool for exploring academic citation networks, analyzing research literature, and building explainable reading lists.
 
 当前实现 **TASK-001 API 验证**、**TASK-002A 一层引用采集与 SQLite 持久化**及
-**TASK-002A.1 采集安全与样本归属**，
-尚未实现图分析或 UI。范围见 [项目简报](docs/PROJECT_BRIEF.md)，证据见
+**TASK-002A.1 采集安全与样本归属**及 **TASK-002B 引用图基础分析**，
+尚未实现 UI。范围见 [项目简报](docs/PROJECT_BRIEF.md)，证据见
 [TASK-001](tasks/TASK-001-API-SPIKE.md)、[TASK-002A](tasks/TASK-002A-COLLECTION-STORE.md)
-和 [TASK-002A.1](tasks/TASK-002A.1-SAFETY-SAMPLES.md)。
+和 [TASK-002A.1](tasks/TASK-002A.1-SAFETY-SAMPLES.md)、[TASK-002B](tasks/TASK-002B-GRAPH.md)。
 
 ## Windows / Python 环境
 
@@ -19,11 +19,97 @@ python -m venv .venv
 ```
 
 直接使用虚拟环境解释器，无需激活脚本或修改 PowerShell 执行策略。
-直接依赖仅为 requests、pytest；其余使用标准库。
+直接依赖为 requests、pytest、NetworkX；其余使用标准库。
+TASK-002B 在现有 Python 3.11.7 / NetworkX 3.6.1 环境验证。
+
+## TASK-002B：只读引用图分析
+
+先按下一节的两篇种子命令生成离线数据库，再使用采集输出的实际 `run_id`：
+
+```powershell
+# 摘要、覆盖提示及按样本入度排序的前三个候选；不会联网。
+.\.venv\Scripts\python.exe scripts/analyze.py --db papertrail-demo.db --run-id 1 --top 3
+# 完整结构化 JSON，包含所有节点属性、边、指标、候选依据及局限。
+.\.venv\Scripts\python.exe scripts/analyze.py --db papertrail-demo.db --run-id 1 --json
+```
+
+`--db` 和 `--run-id` 必填；`--top` 默认 5，范围 1..100，只控制候选数量。
+退出码：0 = 成功；1 = 数据库/run 不存在、不适合分析或内容不一致；2 = 参数错误。
+失败原因写入 stderr，不输出部分分析 JSON。整个入口复用
+`PaperStore.open_readonly()`；不创建数据库、不迁移、不改采集状态、不更新缓存。
+CLI 可读取环境中的 API Key **仅用于输出脱敏**，不会创建 HTTP 客户端。
+
+**输出编码：** 文本保留 Python 选择的终端/重定向编码，stdout 和 stderr 均设置
+`errors="backslashreplace"`。可表示的中文/Unicode 原样输出；cp936 等编码无法表示的字符
+显示为 `\u0151`、`\U0001f9ea` 等转义，不因标题编码失败而崩溃。不强制终端改用 UTF-8，
+也不要求设置 PYTHONIOENCODING。`--json` 使用 ASCII 安全的 Unicode 转义，JSON 解码后可
+恢复完整原文；需程序读取或无损交换时优先使用 JSON。转义保护不替代终端字体支持。
+
+**分析前检查（TASK-002B.1）：** run 与报告的 status 必须一致，且为 `ok` 或 `bounded`，
+有结束时间和报告；核对来源、种子、原始计数、样本总数和预算。
+`ok` 的所有方向必须完整结束，不能含截断方向；`bounded` 至少有一个有效预算截断方向，
+其余方向完整结束。截断要求 `raw_count == target_limit == 本次 limit`，其中 references
+使用 reference_cap，citations 使用该种子的 citation_quota；complete=0、truncated=1，
+无错误和 stop_run，允许仍有 next_offset。**预算截断是达到记录配额后主动停止，不是采集失败。**
+`incomplete`、`interrupted`、`running`、`error`、未知状态及 partial/skipped/error 方向仍拒绝。
+请求预算耗尽造成的失败不能用顶层 `ok` 或 `bounded` 掩盖；恰好用完请求次数但各方向有效结束则允许。
+完整缓存可以保留旧 target_limit，分析核对实际记录同时符合原上限和本次配额。
+
+JSON 和文本摘要均标明采集范围及截断方向。`collection_scope=complete` 只表示所有方向到达
+数据源报告末页；`budget_truncated` 表示存在按配额停止的方向，**两者都不是完整文献网络**。
+每个截断方向给出 seed_id、direction、raw_count、target_limit、expected_count，并警告
+结果遵循 API 顺序，不是“最重要的 N 篇”。以下可用现有 fixture 离线体验预算截断：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/collect.py ARXIV:0000.00001 --offline-fixture tests/fixtures/s2_collection.json --db papertrail-bounded-demo.db --citation-budget 1 --page-size 2
+# 将 1 替换为上一步实际输出的 run_id。
+.\.venv\Scripts\python.exe scripts/analyze.py --db papertrail-bounded-demo.db --run-id 1 --top 3
+```
+
+已到末页但含缺 ID 条目、缺摘要或 count_mismatch 的样本可以分析，必须显示相应警告。
+未解析条目不生成占位节点或边；无已解析论文的空样本报错，有种子但无边则正常保留节点。
+检查的是已保存证据的一致性，不提供数据真实性认证或带签名的防篡改保证。
+
+**图与指标：** `load_graph(db_path, run_id)` 返回 NetworkX `DiGraph`。
+节点和边只来自 `get_sample(run_id)`，不读取 `citation_edges` 历史累计边。
+`A → B` 表示 A 引用 B，同一有序端点只保留一条边。先加全部节点，再加边，保留孤立种子。
+自环 `A → A` 保留，计作一条唯一边，并各增加一次 A 的入度和出度，不改变弱连通分量数；
+`self_loop_count` 单列报告，不能据此把自引解释为独立论文的认可。
+
+| JSON 字段 | 含义 / 计算方法 |
+|---|---|
+| `statistics.paper_count` / `unique_edge_count` | 图节点数 / 去重有向边数，含自环 |
+| `nodes[].local_in_degree` | 指向该节点的样本边数，即样本内观察到的被引数 |
+| `nodes[].local_out_degree` | 该节点指向其他节点或自身的样本边数 |
+| `nodes[].global_citation_count` | SQLite 中保存的 Semantic Scholar `citationCount`；可空，fixture 中为合成值 |
+| `statistics.weak_component_count` | 忽略方向后相互可达的最大节点组数量，孤立节点各算一组 |
+| `statistics.isolated_node_count` / `self_loop_count` | 无任何关联边的节点数 / 自环边数 |
+| `sample.coverage` | 原始/已解析/未解析记录数、采集时缺摘要记录数、重复边观察数 |
+| `sample.collection_scope` | `complete` / `budget_truncated`，采集范围，不代表完整文献网络 |
+| `sample.truncated_directions` | 每个截断方向的种子、方向、实际数量、上限和来源预期数量；无截断时为空列表 |
+| `sample.direction_states` | 所有方向的状态、raw_count、target_limit、expected_count（缺失时 null），不限于 count_mismatch |
+| `sample.warnings` / `limitations` | 数据问题及解释限制，后续界面必须一同展示 |
+
+节点属性含 `paperId/title/year/url/authors/externalIds/abstract`、全局引用量、来源、时间和
+`is_seed`；缺失字段保留 null。**这些是同一次只读事务中读取的最新已知元数据，不是该 run
+采集时的历史属性快照**。样本成员固定，重新分析旧 run 的标题/全局引用数仍可能变化。
+
+`summarize_graph(graph, top=5)` 返回可 JSON 序列化的
+`sample/statistics/nodes/edges/candidates/candidate_order`，供后续界面复用。
+应直接传入 `load_graph` 返回的未修改图，以保持样本证据与指标一致。
+候选仅按正的 `local_in_degree` 降序排列，同值按 paperId 升序，包含种子；不使用全局引用量
+打破平局，也不生成复杂评分。局部入度和全局引用量都不等于质量、经典程度或 baseline 地位。
+候选字典也保留 `is_seed`，种子 reason 提示入度反映受配额约束的采样 citing 论文，文本加
+`[seed]` 标记。种子入度受被引采样配额影响，不能与非种子入度直接比较；候选表只是样本观察顺序。
+
+现有合成 fixture 的实际结果：4 篇论文、5 条边、1 个弱连通分量、0 个孤立节点/自环；
+7 条原始记录中 1 条未解析、1 次重复边观察、6 条缺摘要（原始记录口径，包含重复项）。
+候选 A、C、B 的局部入度分别为 2、2、1；全局引用字段分别为 2、null、1。
+单层采集通常漏掉候选之间的相互引用，以上结果仅描述当前合成样本，不能外推到领域。
 
 ## TASK-002A：离线演示与采集
 
-以下示例从仓库根目录运行，使用现有 `.venv`，无需安装新依赖。
+以下示例从仓库根目录运行，使用已安装上述依赖的 `.venv`。
 先运行离线演示：两篇合成种子，共得到 4 篇唯一论文、5 条唯一有向边。
 这不是实际论文数据，使用独立的演示数据库，不与真实采集数据库混用。
 
@@ -67,6 +153,8 @@ JSON 总状态 `ok` 表示全部 API 报告末页，`bounded` 表示存在预算
 | `src/papertrail/store.py` | SQLite、别名、事务、缓存记录归属、样本查询与来源绑定 |
 | `src/papertrail/collector.py` | 规范化种子、一层扩展、配额、缓存与续传、run 生命周期 |
 | `src/papertrail/cli.py` / `scripts/collect.py` | 参数、报告、合成 fixture 适配器 / 直接运行入口 |
+| `src/papertrail/analysis.py` | 只读 run 校验、DiGraph、样本指标和候选依据 |
+| `src/papertrail/analysis_cli.py` / `scripts/analyze.py` | 分析摘要 / JSON 命令行入口 |
 
 | 表 | 键与内容 |
 |---|---|
@@ -195,7 +283,7 @@ CLI 在创建客户端/打开数据库前校验；库入口也校验。请求预
 被错误标注为真实来源的数据，旧来源标签必须可信。旧外部别名无直接确认来源时仍需确认。
 旧关系缓存没有逐条样本归属，即使 TTL 有效也需重取一次，不能把历史并集当作它的样本；
 可验证的元数据缓存仍可复用。升级后继续使用原有 TTL/截断缓存/续传规则。
-真实分页及 DOI 路径验证仍待授权，尚未开始 NetworkX 分析。
+真实分页及 DOI 路径验证仍待授权；NetworkX 基础分析见上文 TASK-002B。
 
 ## TASK-001：API Key 与实验脚本
 
@@ -288,11 +376,25 @@ TASK-002A 新增 `tests/test_collection.py` 及 `tests/fixtures/s2_collection.js
 包括 TASK-001 的 31 项和 TASK-002A 的 61 项；原有两处手工插入 fixture 的测试显式绑定来源，
 保留其业务断言，避免把合成测试数据误标为真实数据。
 最终审查补充真正只读、WAL 快照、异常数据库、记录篡改、旧非零游标和参数/报告脱敏回归，
-当前总计 **134 项测试**。--show-run 已验证文件字节与 SQL 内容不变，SQL 跟踪无写操作，
+TASK-002A.1 完成时总计 **134 项测试**。--show-run 已验证文件字节与 SQL 内容不变，SQL 跟踪无写操作，
 只读连接拒绝 UPDATE。CLI 参数错误及只读报告按当前环境中的 API Key 脱敏；这两个显示路径
 可能读取环境变量以隐藏密钥，但不会因此创建 HTTP 客户端或联网。
+TASK-002B 初版新增 **58 项离线测试**，当时 **192 项全部通过**。覆盖引用方向、度数、run 隔离、
+历史边排除、去重、孤立节点、自环、状态/预算/来源/端点异常、空样本、缺失 run、只读连接、
+WAL 一致性及 CLI 摘要/JSON/脱敏。SQL 授权器禁止读历史边表及写入，主动 UPDATE 被拒绝，
+分析前后 DB 字节与 SQL 内容一致。原 134 项测试未修改。
+TASK-002B.1 在原 192 项基础上按 Owner 新规则更新截断断言，新增 **19 项**，现有
+**211 项全部通过**。新增覆盖 5 篇 citing / 配额 4 的截断图、状态与配额伪造拒绝、种子标记、
+逐方向 expected_count，以及不设置 PYTHONIOENCODING 时默认重定向、cp936、UTF-8 的 Unicode
+标题文本/JSON 输出。完整命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q -o cache_dir=output/task002b1-pytest-cache
+# 211 passed in 28.71s
+```
+
 所有数据库测试使用 pytest 临时目录。如果本机旧 `.pytest_cache` 不可写，可指定新的
-忽略目录：`python -m pytest -q -o cache_dir=output/task002a-pytest-cache`。
+忽略目录：`python -m pytest -q -o cache_dir=output/task002b-pytest-cache`。
 
 ## 官方资料与来源
 
