@@ -121,6 +121,26 @@ class S2Client:
             "/paper/" + quote(paper_id, safe=":"), {"fields": ",".join(PAPER_FIELDS)},
         )
 
+    def search_titles(self, query, *, limit=5):
+        """One bounded relevance-search page; callers must confirm a candidate.
+
+        Shares request_json timeouts, retry/pacing, redaction and request budget.
+        This deliberately does not use the automatic best-title-match endpoint.
+        """
+        if not isinstance(query, str) or not query.strip() or len(query.strip()) > 500:
+            raise ValueError("Search query must contain 1..500 characters.")
+        if type(limit) is not int or not 1 <= limit <= 10:
+            raise ValueError("Search limit must be an integer in 1..10.")
+        # Relevance search does not reliably match hyphenated query terms.
+        # Normalize only this request; identifiers and the caller's text stay intact.
+        search_query = " ".join(re.sub(r"[-\u2010-\u2015]", " ", query).split())
+        if not search_query:
+            raise ValueError("Search query must contain words, not only hyphens.")
+        return self.request_json("/paper/search", {
+            "query": search_query, "limit": limit, "offset": 0,
+            "fields": ",".join(PAPER_FIELDS),
+        })
+
     def relation_page(self, paper_id, direction, offset, limit):
         if direction not in {"references", "citations"}:
             raise ValueError("Unknown relation direction.")

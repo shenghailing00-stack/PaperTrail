@@ -3,11 +3,11 @@ A Python tool for exploring academic citation networks, analyzing research liter
 
 当前实现 **TASK-001 API 验证**、**TASK-002A 一层引用采集与 SQLite 持久化**及
 **TASK-002A.1 采集安全与样本归属**、**TASK-002B 引用图基础分析**及
-**TASK-003 候选发现、筛选、排序与样本统计**，
-尚未实现 UI。范围见 [项目简报](docs/PROJECT_BRIEF.md)，证据见
+**TASK-003 候选发现、筛选、排序与样本统计**，以及
+**TASK-004 Streamlit MVP 与 CSV/Markdown 阅读清单导出**。范围见 [项目简报](docs/PROJECT_BRIEF.md)，证据见
 [TASK-001](tasks/TASK-001-API-SPIKE.md)、[TASK-002A](tasks/TASK-002A-COLLECTION-STORE.md)
 和 [TASK-002A.1](tasks/TASK-002A.1-SAFETY-SAMPLES.md)、[TASK-002B](tasks/TASK-002B-GRAPH.md)、
-[TASK-003](tasks/TASK-003-DISCOVERY.md)。
+[TASK-003](tasks/TASK-003-DISCOVERY.md)、[TASK-004](tasks/TASK-004-UI.md)。
 
 ## Windows / Python 环境
 
@@ -21,8 +21,104 @@ python -m venv .venv
 ```
 
 直接使用虚拟环境解释器，无需激活脚本或修改 PowerShell 执行策略。
-直接依赖为 requests、pytest、NetworkX；其余使用标准库。
+直接依赖为 requests、pytest、NetworkX、Streamlit、Plotly。
 TASK-002B 在现有 Python 3.11.7 / NetworkX 3.6.1 环境验证。
+
+## TASK-004：启动图形界面
+
+在仓库根目录运行（已有环境只需安装更新后的 requirements）：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m streamlit run streamlit_app.py
+```
+
+浏览器打开 [本机 PaperTrail](http://127.0.0.1:8501)。无需激活虚拟环境。
+`.streamlit/config.toml` 默认只监听本机并关闭 Streamlit 使用统计上传；不包含密钥。
+TASK-004 验证环境为 Python 3.11.7、Streamlit 1.67.0、Plotly 6.9.0、NetworkX 3.6.1。
+更新代码后若页面仍显示旧版，请在运行服务的终端按 Ctrl+C，再执行上述启动命令；
+仅刷新网页不保证已导入的模块重新加载。终端中的服务必须保持运行。
+
+### 完整离线演示
+
+依赖首次安装完成后，以下流程无需网络、无需 API Key：
+
+1. 点击侧栏 **打开演示（无需网络）**。系统使用现有 `tests/fixtures/s2_collection.json`，
+   在 `output/ui-demo/` 创建按 fixture 指纹命名的独立数据库；再次打开复用已完成 run。
+   页面应显示 4 篇论文、5 条引用边、2 篇种子、2 篇非种子候选、2 篇缺年份。
+2. **引用网络**：橙色菱形为种子，蓝色圆点为非种子；箭头 A→B 表示 A 引用 B。
+   点击蓝色节点或使用“选择论文节点查看详情”，核对标题、年份、摘要、样本入出度。
+   Shared synthetic reference 的摘要为 `Example abstract.`；Synthetic citing paper 引用 2/2 颗种子。
+   显示上限可调为 3–200，优先种子、其余按 ID；只影响画图，不缩小分析样本。
+3. **候选论文**：分别查看“被种子引用”与“引用种子”；各自默认按对应种子数量降序。
+   关系涉及至少 2 颗种子才标“共同”，并显示参与比例。同值篇数含自身，ID 次序不代表价值。
+   年份/全局引用量范围、逗号分隔关键词可组合筛选，也可改用年份或全局引用量排序。
+   演示候选年份与全局引用量均未知，启用相应数值筛选后为空是预期结果；关闭即可恢复。
+4. **样本统计**：查看 2024/2025 各 1 篇及缺年份 2 篇、缺摘要 3 篇。
+   输入 `synthetic, example`，分别得到标题/摘要/标题或摘要论文数 **4/0/4** 和 **0/1/1**。
+   统计复用完整当前 run，含种子，忽略大小写、按字面子串匹配，每篇计一次；并集不是两列相加。
+   图表仅描述当前采集样本，不能推断整个领域趋势。原始关系记录与唯一论文的缺失数口径不同。
+5. **阅读清单**：从节点详情加入，或用多选框手动选择种子/候选；填写阅读理由，下载 CSV 和 Markdown。
+   两种格式都有标题、年份、来源链接、类别、关系依据、阅读理由、来源标记、采集范围、run_id 和 paperId。
+   CSV 使用 UTF-8 BOM，并转义可能被表格程序当成公式的文本；Markdown 将外部文本作为字面内容，
+   保留中文、引号与换行，图片/链接语法不会执行。仅来源栏生成通过格式与 HTTP(S) 协议检查的链接。
+   合成论文始终标为演示数据，**来源链接留空，不把虚构 DOI/arXiv 变成真实论文链接**。
+
+浏览器会话中按“数据库绝对路径 + run_id”保存打开的分析结果、选择和阅读理由。
+筛选、切换标签页、点击节点、下载不会重新采集；切换样本后各自清单仍保留。
+关闭／刷新浏览器或重启服务可能结束会话，清单尚未写回数据库，请及时下载。
+重新打开同一 run 会刷新最新已知元数据；此版本不提供历史元数据快照。
+
+### 打开已有样本与新建采集
+
+“已有样本”中输入数据库路径，点击“读取任务列表”并选择任务，或直接输入 run_id 打开。
+打开过程只读，不迁移数据库、不查询 API；失败、未完成或不一致的样本显示错误且不保留旧图冒充新结果。
+正常 `bounded` 样本可以打开，顶部保留中文预算截断警告、实际截断方向及数量。
+
+真实采集须先获得 Owner 授权，本轮**未执行真实 API 查询或采集**：
+
+1. 选择“新建采集”，每行输入一篇 DOI、arXiv ID 或标题，共 1–3 篇。
+   支持裸 DOI、`DOI:`、DOI URL、裸 arXiv、`ARXIV:`、arXiv `/abs/` URL，也接受 S2 paperId。
+2. 授权后勾选相应复选框，点击“查询种子候选（联网）”。标题通过 relevance search 返回最多 5 条，
+   显示标题、年份、作者和来源链接；不会自动采用第一条。没有结果时须修改输入重新查询。
+   仅标题请求会将连字符替换为空格，例如 `Pre-training` → `Pre training`；界面原输入和 DOI/arXiv 不变。
+3. 逐项选择，再点击“确认这些种子”。修改输入或候选选择会使原确认失效。
+4. 选择与演示库分开的真实数据库，设置全局被引预算（默认 150，UI 范围 0–200）和
+   请求尝试预算（默认 100，UI 范围 1–100），点击“开始采集（联网）”。只扩展一层。
+
+同一会话中，每组参数的一次操作只提交一次；运行中、已完成、失败或中断后均不因重绘自动重发。
+要再次操作，先点“准备重新查询／重试”或“准备重新采集／重试”，再点对应提交按钮；准备步骤不联网。
+查询重试后须重新人工确认种子。输入、确认结果、数据库路径及预算决定对应操作状态，改回旧参数
+仍保留原状态。重新采集沿用 collector 缓存规则，不等于强制刷新。这是会话内保护，不是跨浏览器或跨进程锁。
+
+查询阶段独立上限 9 次 HTTP 尝试，含重试；采集阶段按现有 collector 的预算计数。
+未使用份额不重新分配；参考文献每种子最多 10000 条、每页最多 100、缓存 TTL 7 天。
+本轮确认后的稳定 paperId 交给 collector 再取/复用元数据，查询结果不直接写入采集库。
+界面提供运行状态、run_id、实际请求尝试数和失败详情；中断/失败数据不能冒充有效分析样本。
+无 Key 可尝试匿名请求，但实际可用性和限流需要另行授权验收。
+
+### 验证范围
+
+TASK-004 初版为 319 项；TASK-004.1 新增 36 项后完整回归 **355 passed in 85.76s**，
+其中 UI 定向回归 **77 passed in 24.62s**。覆盖批量箭头、图缓存隔离、全样本关键词统计、
+重复提交/重试状态、连字符查询、异常元数据与 Markdown 安全。
+离线测试使用临时库、合成 fixture、mock HTTP 和 Streamlit AppTest；不访问真实论文 API。
+AppTest 覆盖控件与重绘行为；实际浏览器另已验证演示入口、节点点击到详情、加入清单、
+中文阅读理由、CSV/Markdown 下载，以及年份筛选和样本统计。
+TASK-004.1 另实测了关键词表与特殊文本 Markdown 渲染；没有执行真实 API。
+图布局与 Plotly 图对象在当前打开样本内按身份和节点上限缓存；重新打开会刷新，无关控件不重算布局。
+每条边先生成箭头数据，再一次提交布局。100/200 节点（293/593 边）各三次实测，构图中位耗时
+分别由 **27.547/119.665 秒降为 0.088/0.277 秒**；测量含布局与图对象创建，不代表浏览器帧率。
+真实搜索结果、真实来源链接目标、真实采集/限流、浏览器刷新后的人工恢复及大图使用体验
+仍需按 [TASK-004 人工验收清单](tasks/TASK-004-UI.md) 检查，不能视为已通过真实端到端测试。
+快速连续点击的浏览器事件排队仍需人工验收；自动化已检查重复/旧尝试拒绝、失败保留及主动重试。
+可选 M7（图内高亮与下拉选择同步）暂缓；详情由当前选择控制，不承诺同步清除 Plotly 原高亮。
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q -o cache_dir=output/task0041-pytest-cache
+# 离线性能测量；不是 CI 时间阈值测试，输出到 Git 忽略目录
+.\.venv\Scripts\python.exe scripts/benchmark_ui_graph.py --label local --repeats 3 --output output/task0041-performance/local.json
+```
 
 ## TASK-003：候选发现、筛选、排序与样本统计
 
@@ -47,14 +143,15 @@ TASK-002B 在现有 Python 3.11.7 / NetworkX 3.6.1 环境验证。
 
 | 类别 / 字段 | 当前 run 中的含义 |
 |---|---|
-| `shared_reference`（共同参考文献） | 至少一篇种子存在 `种子 → 该论文` |
+| `shared_reference`（被种子引用） | 至少一篇种子存在 `种子 → 该论文` |
 | `referenced_by_seed_count` / `referenced_by_seed_ids` | 引用该论文的不同种子数 / 排序后的种子 ID 列表 |
-| `shared_citing`（共同后续研究） | 至少一篇种子存在 `该论文 → 种子`；不推断发表时间一定更晚 |
+| `shared_citing`（引用种子） | 至少一篇种子存在 `该论文 → 种子`；不推断发表时间一定更晚 |
 | `cites_seed_count` / `cites_seed_ids` | 该论文引用的不同种子数 / 排序后的种子 ID 列表 |
 | `local_in_degree` / `local_out_degree` | 所有已观察入边 / 出边数，不能用它们替代与种子的关系计数 |
 | `evidence` / `reason` | 类别、种子 ID、数量和边方向的结构化依据 / 可读解释 |
 
-“共同”从一篇种子起计，同一非种子论文可同时属于两类；重复观察的同一条边只计一次。
+内部类别从一篇种子起计；UI 只在关系涉及至少两颗种子时使用“共同”。
+同一非种子论文可同时属于两类；重复观察的同一条边只计一次。
 每行保留标题、摘要、年份、来源、URL、externalIds、获取时间及全局引用量，缺失值保留 null。
 
 `--sort-by` 可取 `referenced_by_seed_count`（默认）、`cites_seed_count`、
@@ -219,7 +316,7 @@ JSON 和文本摘要均标明采集范围及截断方向。`collection_scope=com
 
 `--offline-fixture` 不创建 HTTP 客户端、不读取 API Key；fixture 缺失条目也不会回退到网络。
 输出 `mode=offline_fixture`，数据库来源注明合成数据。输入支持 1–3 个带前缀外部 ID
-或 S2 paperId；暂不提供标题检索。必须显式传入 `--db`，其父目录须已存在。
+或 S2 paperId；此 CLI 不提供标题检索（图形界面已支持）。必须显式传入 `--db`，其父目录须已存在。
 每次采集（包括完全命中缓存）都有独立 run_id；`--show-run` 读取该次样本成员、配置、
 来源、原始计数和完成报告，不能与 seeds/fixture/refresh 一起使用。
 此入口使用独立的 `PaperStore.open_readonly(path)`，通过 SQLite URI `mode=ro` 打开，

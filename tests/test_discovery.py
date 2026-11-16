@@ -98,6 +98,24 @@ def test_neighbor_degree_is_not_a_seed_count(saved):
     assert (rows[D]["local_out_degree"], rows[D]["cites_seed_count"]) == (3, 2)
 
 
+def test_seed_to_seed_citations_do_not_inflate_non_seed_candidates(tmp_path):
+    # Existing fixture has B -> A, observed through A's citations. Both are seeds.
+    path = tmp_path / "seed-relations.db"
+    with PaperStore(path) as store:
+        report = collect(cli.FixtureClient(FIXTURE), store, SEEDS, page_size=2)
+    graph = analysis.load_graph(path, report["run_id"])
+    assert graph.has_edge(B, A)
+    result = discovery.discover(path, report["run_id"], include_seeds=True)
+    assert set(ids(result["seeds"])) == {A, B}
+    assert set(ids(result["candidates"])) == {C, D}
+    assert result["statistics"]["candidate_count"] == 2
+    assert result["statistics"]["candidate_counts"] == {"shared_reference": 1, "shared_citing": 1}
+    assert all(row["categories"] == [] for row in result["seeds"])
+    seeds = {row["paperId"]: row for row in result["seeds"]}
+    assert seeds[A]["referenced_by_seed_ids"] == [B]
+    assert seeds[B]["cites_seed_ids"] == [A]
+
+
 @pytest.mark.parametrize("options, expected", [
     ({"year_min": 2022, "year_max": 2023}, [E, D]),
     ({"year_max": 2020}, [C]),
