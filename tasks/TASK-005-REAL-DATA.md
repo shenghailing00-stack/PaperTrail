@@ -56,7 +56,7 @@
 ## 已采取的行动
 
 1. 2026-11-19，Owner 回复了原 Key 邮件说明情况。收到的是自动回复，人工支持需要通过 `https://www.semanticscholar.org/about/contact` 提交。
-2. 2026-11-19，Owner 用学校邮箱重新提交了 Key 申请（Private 用途，端点为 paper / references / citations / search）。
+2. 2026-11-19，Owner 用学校邮箱重新提交了 Key 申请（Private 用途，端点为 paper / references / citations / search）。提交成功：页面提示已收到申请，但 S2 正在处理积压的申请。S2 不会另外发确认邮件，唯一会收到的是标题为 "Your Semantic Scholar API Key" 的批准邮件。8 月那次申请约 20 分钟就自动批准了，这次因为有积压，审批时间无法预估。不要重复提交；如果约两周后（12 月初）仍未收到，就通过联系表单询问进度。
 
 ## 解除阻塞的步骤
 
