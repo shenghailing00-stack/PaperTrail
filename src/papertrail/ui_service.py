@@ -305,18 +305,18 @@ def network_figure(graph, max_nodes=100):
         x1, y1 = map(float, pos[b])
         if a == b:
             shapes.append(dict(type="circle", x0=x0, x1=x0 + .12, y0=y0, y1=y0 + .12,
-                               line_color="#C7C7CC"))
+                               line_color="#5C5852"))
             annotations.append(dict(x=x0 + .12, y=y0 + .06, ax=x0 + .10, ay=y0 + .10,
-                                    xref="x", yref="y", axref="x", ayref="y", arrowhead=2, arrowcolor="#C7C7CC", text=""))
+                                    xref="x", yref="y", axref="x", ayref="y", arrowhead=2, arrowcolor="#5C5852", text=""))
         else:
             # Shorten at both ends so the arrowhead remains visible beside markers.
             annotations.append(dict(x=x0 + .88*(x1-x0), y=y0 + .88*(y1-y0),
                                   ax=x0 + .12*(x1-x0), ay=y0 + .12*(y1-y0),
                                   xref="x", yref="y", axref="x", ayref="y", text="",
-                                  showarrow=True, arrowhead=2, arrowwidth=1.3, arrowcolor="#C7C7CC",
+                                  showarrow=True, arrowhead=2, arrowwidth=1.3, arrowcolor="#5C5852",
                                   standoff=14 if graph.nodes[b]["is_seed"] else 0))
-    for is_seed, label, color, symbol in ((False, "相关论文", "#8E8E93", "circle"),
-                                         (True, "种子论文", "#007AFF", "diamond")):
+    for is_seed, label, color, symbol in ((False, "相关论文", "#6E6A63", "circle"),
+                                         (True, "种子论文", "#D4A373", "diamond")):
         group = [p for p in nodes if graph.nodes[p]["is_seed"] == is_seed]
         figure.add_trace(go.Scatter(x=[float(pos[p][0]) for p in group],
                                    y=[float(pos[p][1]) for p in group], mode="markers",
@@ -324,7 +324,7 @@ def network_figure(graph, max_nodes=100):
                                    text=[escape(display_text(graph.nodes[p].get("title"), "标题缺失")) for p in group],
                                    hovertemplate="%{text}<extra>%{fullData.name}</extra>",
                                    marker=dict(size=24 if is_seed else 13, color=color, symbol=symbol,
-                                               line=dict(color="#FFFFFF", width=2 if is_seed else 0))))
+                                               line=dict(color="#121212", width=2 if is_seed else 0))))
     figure.update_layout(annotations=annotations, shapes=shapes,
                          height=500, clickmode="event+select", dragmode="pan", margin=dict(l=20, r=20, t=20, b=20),
                          xaxis=dict(visible=False), yaxis=dict(visible=False, scaleanchor="x"),

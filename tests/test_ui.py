@@ -408,10 +408,10 @@ def test_network_annotations_are_batched_and_preserve_direction(size, monkeypatc
             assert arrow.y == pytest.approx(positions[a][1] + .88 * (positions[b][1] - positions[a][1]))
             assert arrow.arrowhead == 2
             assert arrow.standoff == (14 if graph.nodes[b]["is_seed"] else 0)
-    assert figure.data[0].marker.color == "#8E8E93" and figure.data[1].marker.color == "#007AFF"
+    assert figure.data[0].marker.color == "#6E6A63" and figure.data[1].marker.color == "#D4A373"
     assert figure.data[-1].marker.symbol == "diamond"
     assert figure.data[-1].marker.size == 24
-    assert figure.data[-1].marker.line.color == "#FFFFFF"
+    assert figure.data[-1].marker.line.color == "#121212"
     assert figure.data[-1].marker.line.width == 2
     drawn = [item[0] for trace in figure.data for item in trace.customdata]
     assert len(drawn) == len(nodes) and set(drawn) == set(nodes)

@@ -289,7 +289,7 @@ def statistics_panel(view, prefix):
     years = stats["year_distribution"]
     if years:
         figure = go.Figure(go.Bar(x=[row["year"] for row in years],
-                                  y=[row["paper_count"] for row in years], marker_color="#007AFF",
+                                  y=[row["paper_count"] for row in years], marker_color="#D4A373",
                                   hovertemplate="%{x} 年 · %{y} 篇<extra></extra>"))
         figure.update_layout(height=320, margin=dict(l=20, r=20, t=10, b=20),
                              xaxis=dict(title="年份", dtick=1, fixedrange=True),

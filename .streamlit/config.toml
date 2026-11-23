@@ -5,16 +5,25 @@ gatherUsageStats = false
 address = "127.0.0.1"
 headless = true
 
+# "Ink and gold" dark palette (TASK-UI-02): warm black, ivory text, amber accents.
 [theme]
-base = "light"
-primaryColor = "#007AFF"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F5F5F7"
-textColor = "#1D1D1F"
+base = "dark"
+# Deep bronze keeps white button text readable (about 4.6:1); brighter gold is used for links and charts.
+primaryColor = "#9C6A38"
+backgroundColor = "#121212"
+secondaryBackgroundColor = "#1E1C1A"
+textColor = "#EDE6DA"
+borderColor = "#2E2C29"
+linkColor = "#E0B98F"
+dataframeHeaderBackgroundColor = "#1A1918"
+dataframeBorderColor = "#2E2C29"
 font = '-apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
 baseRadius = "large"
 showWidgetBorder = false
 headingFontSizes = ["2rem", "1.5rem", "1.2rem"]
+
+[theme.sidebar]
+backgroundColor = "#1A1918"
 
 [client]
 toolbarMode = "minimal"
