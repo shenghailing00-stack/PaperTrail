@@ -1,0 +1,3 @@
+# Byte-exact export fixtures: never convert line endings.
+tests/fixtures/reading_export_legacy.csv -text
+tests/fixtures/reading_export_legacy.md -text
