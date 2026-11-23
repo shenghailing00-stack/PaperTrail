@@ -313,7 +313,8 @@ def network_figure(graph, max_nodes=100):
             annotations.append(dict(x=x0 + .88*(x1-x0), y=y0 + .88*(y1-y0),
                                   ax=x0 + .12*(x1-x0), ay=y0 + .12*(y1-y0),
                                   xref="x", yref="y", axref="x", ayref="y", text="",
-                                  showarrow=True, arrowhead=2, arrowwidth=1.3, arrowcolor="#C7C7CC"))
+                                  showarrow=True, arrowhead=2, arrowwidth=1.3, arrowcolor="#C7C7CC",
+                                  standoff=14 if graph.nodes[b]["is_seed"] else 0))
     for is_seed, label, color, symbol in ((False, "相关论文", "#8E8E93", "circle"),
                                          (True, "种子论文", "#007AFF", "diamond")):
         group = [p for p in nodes if graph.nodes[p]["is_seed"] == is_seed]
@@ -322,7 +323,8 @@ def network_figure(graph, max_nodes=100):
                                    name=label, customdata=[[p] for p in group],
                                    text=[escape(display_text(graph.nodes[p].get("title"), "标题缺失")) for p in group],
                                    hovertemplate="%{text}<extra>%{fullData.name}</extra>",
-                                   marker=dict(size=18 if is_seed else 13, color=color, symbol=symbol)))
+                                   marker=dict(size=24 if is_seed else 13, color=color, symbol=symbol,
+                                               line=dict(color="#FFFFFF", width=2 if is_seed else 0))))
     figure.update_layout(annotations=annotations, shapes=shapes,
                          height=500, clickmode="event+select", dragmode="pan", margin=dict(l=20, r=20, t=20, b=20),
                          xaxis=dict(visible=False), yaxis=dict(visible=False, scaleanchor="x"),
@@ -353,6 +355,34 @@ def selected_node(event, allowed):
     return None
 
 
+def _cell(value):
+    value = str(safe(value))
+    # Keep spreadsheet applications from treating external text as formulas.
+    return "'" + value if value.lstrip().startswith(("=", "+", "-", "@")) else value
+
+def _md(value):
+    # Literal code spans prevent images, raw HTML, links AND bare-URL
+    # autolinking. Choose a fence longer than any external backtick run.
+    text = str(safe(value)).replace("\r\n", "\n").replace("\r", "\n")
+    parts = []
+    for line in text.split("\n"):
+        chunks = []
+        # Escape separators outside the spans, so an external backslash
+        # beside a pipe cannot change table structure or lose a character.
+        for chunk in line.split("|"):
+            fence = "`" * (max((len(run) for run in re.findall(r"`+", chunk)), default=0) + 1)
+            chunks.append(fence + " " + chunk + " " + fence if chunk else "")
+        parts.append("\\|".join(chunks))
+    return "<br>".join(parts)
+def _markdown_record(record):
+    cells = [_md(value) for value in record]
+    # Only the dedicated, locally validated source column becomes a link.
+    if valid_source_url(record[2]):
+        target = quote(safe(record[2]), safe="/:?=&%#+")
+        cells[2] = f"[查看来源](<{target}>)"
+    return "| " + " | ".join(cells) + " |"
+
+
 def export_reading_list(view, selected, notes):
     result = view["result"]
     demo = result["sample"]["mode"] == "offline_fixture"
@@ -367,39 +397,14 @@ def export_reading_list(view, selected, notes):
                         relation_text(row, result["statistics"]["seed_count"]) + "；由用户手动加入",
                         notes.get(paper_id, ""), provenance, result["sample"]["collection_scope"],
                         result["sample"]["run_id"], paper_id])
-    def cell(value):
-        value = str(safe(value))
-        # Keep spreadsheet applications from treating external text as formulas.
-        return "'" + value if value.lstrip().startswith(("=", "+", "-", "@")) else value
     buffer = io.StringIO(newline="")
     writer = csv.writer(buffer)
     writer.writerow(headers)
-    writer.writerows([[cell(value) for value in record] for record in records])
-    def md(value):
-        # Literal code spans prevent images, raw HTML, links AND bare-URL
-        # autolinking. Choose a fence longer than any external backtick run.
-        text = str(safe(value)).replace("\r\n", "\n").replace("\r", "\n")
-        parts = []
-        for line in text.split("\n"):
-            chunks = []
-            # Escape separators outside the spans, so an external backslash
-            # beside a pipe cannot change table structure or lose a character.
-            for chunk in line.split("|"):
-                fence = "`" * (max((len(run) for run in re.findall(r"`+", chunk)), default=0) + 1)
-                chunks.append(fence + " " + chunk + " " + fence if chunk else "")
-            parts.append("\\|".join(chunks))
-        return "<br>".join(parts)
-    def markdown_record(record):
-        cells = [md(value) for value in record]
-        # Only the dedicated, locally validated source column becomes a link.
-        if valid_source_url(record[2]):
-            target = quote(safe(record[2]), safe="/:?=&%#+")
-            cells[2] = f"[查看来源](<{target}>)"
-        return "| " + " | ".join(cells) + " |"
-    lines = ["# PaperTrail 阅读清单", "", md(provenance),
+    writer.writerows([[_cell(value) for value in record] for record in records])
+    lines = ["# PaperTrail 阅读清单", "", _md(provenance),
              "仅依据当前采集样本与用户选择，不代表领域整体、科研质量或必读推荐。",
-             "采集范围：" + md(result["sample"]["collection_scope"]), ""]
-    lines += ["> " + md(warning) for warning in result["sample"]["warnings"]]
+             "采集范围：" + _md(result["sample"]["collection_scope"]), ""]
+    lines += ["> " + _md(warning) for warning in result["sample"]["warnings"]]
     lines += ["", "| " + " | ".join(headers) + " |", "| " + " | ".join(["---"]*len(headers)) + " |"]
-    lines += [markdown_record(record) for record in records]
+    lines += [_markdown_record(record) for record in records]
     return buffer.getvalue().encode("utf-8-sig"), "\n".join(lines).encode("utf-8")

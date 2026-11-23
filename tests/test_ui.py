@@ -12,7 +12,7 @@ import requests
 from streamlit.testing.v1 import AppTest
 from streamlit.testing.v1.errors import AppTestError
 
-from papertrail import api, ui_service as service, ui
+from papertrail import api, ui_service as service, ui, library
 from scripts.benchmark_ui_graph import synthetic_graph
 from papertrail.cli import FixtureClient
 from papertrail.collector import collect
@@ -20,7 +20,7 @@ from papertrail.store import PaperStore, SourceMismatch
 
 
 A, B, C, D = (letter * 40 for letter in "abcd")
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(service.__file__).resolve().parents[2]
 
 
 @pytest.fixture(autouse=True)
@@ -276,11 +276,12 @@ def test_demo_widgets_select_node_reading_and_rerun(app, monkeypatch):
     widget(app.selectbox, "_node").select(C).run()
     assert any(item.value == "Example abstract." for item in app.text)
     widget(app.button, "add_node").click().run()
-    assert widget(app.multiselect, "reading_widget").value == [C]
-    widget(app.text_input, "note_" + C).input("先读方法").run()
+    edit_library(app, {0: {"备注": "先读方法", "状态": "在读"}})
     widget(app.slider, "_limit").set_value(3).run()
-    assert widget(app.multiselect, "reading_widget").value == [C]
-    assert widget(app.text_input, "note_" + C).value == "先读方法"
+    saved = library.items(library.path_for(app.session_state["view"]))
+    assert [r["paper_id"] for r in saved] == [C]
+    assert saved[0]["note"] == "先读方法" and saved[0]["status"] == "reading"
+    assert any("✓ 已在阅读库 · 在读" == item.value for item in app.text)
     assert not forbidden.called and not app.exception
     assert len(app.get("download_button")) == 2
 
@@ -363,18 +364,24 @@ def test_bounded_and_failed_sample_ui(app, tmp_path, request_budget, expected):
         assert [item.value for item in app.metric] == ["4", "2", "2"]
 
 
-def test_reading_state_separate_for_same_run_id_different_databases(app, tmp_path):
+def test_reading_library_shared_across_databases_with_source_filter(app, tmp_path):
     app.button(key="open_demo").click().run()
-    widget(app.multiselect, "reading_widget").set_value([C]).run()
+    widget(app.selectbox, "_node").select(C).run()
+    widget(app.button, "add_node").click().run()
+    edit_library(app, {0: {"备注": "跨样本保留"}})
     first_identity = app.session_state["view"]["identity"]
     other_path, run_id = service.open_demo(tmp_path / "other")
     assert run_id == first_identity[1]
     app.text_input(key="open_path").input(other_path).run()
     app.button(key="FormSubmitter:open_run-按编号打开").click().run()
-    assert widget(app.multiselect, "reading_widget").value == []
-    widget(app.multiselect, "reading_widget").set_value([D]).run()
-    app.button(key="open_demo").click().run()
-    assert widget(app.multiselect, "reading_widget").value == [C]
+    widget(app.checkbox, "_current").check().run()
+    assert not any("editor_" in f.proto.id for f in app.dataframe)
+    widget(app.selectbox, "_node").select(C).run()
+    widget(app.button, "add_node_source").click().run()
+    rows = library.items(library.path_for(app.session_state["view"]))
+    assert len(rows) == 1 and len(rows[0]["sources"]) == 2
+    assert rows[0]["note"] == "跨样本保留"
+    assert any("editor_" in f.proto.id for f in app.dataframe)
     assert not app.exception
 
 
@@ -400,8 +407,12 @@ def test_network_annotations_are_batched_and_preserve_direction(size, monkeypatc
             assert arrow.ax == pytest.approx(positions[a][0] + .12 * (positions[b][0] - positions[a][0]))
             assert arrow.y == pytest.approx(positions[a][1] + .88 * (positions[b][1] - positions[a][1]))
             assert arrow.arrowhead == 2
+            assert arrow.standoff == (14 if graph.nodes[b]["is_seed"] else 0)
     assert figure.data[0].marker.color == "#8E8E93" and figure.data[1].marker.color == "#007AFF"
     assert figure.data[-1].marker.symbol == "diamond"
+    assert figure.data[-1].marker.size == 24
+    assert figure.data[-1].marker.line.color == "#FFFFFF"
+    assert figure.data[-1].marker.line.width == 2
     drawn = [item[0] for trace in figure.data for item in trace.customdata]
     assert len(drawn) == len(nodes) and set(drawn) == set(nodes)
     assert all(graph.nodes[item[0]]["is_seed"] for item in figure.data[-1].customdata)
@@ -433,7 +444,7 @@ def test_unrelated_ui_changes_reuse_drawing(app, monkeypatch):
     widget(app.text_input, "statistics_keywords").input("synthetic").run()
     widget(app.selectbox, "_node").select(C).run()
     widget(app.button, "add_node").click().run()
-    widget(app.text_input, "note_" + C).input("notes").run()
+    edit_library(app, {0: {"备注": "notes"}})
     widget(app.checkbox, "use_year").check().run()
     assert builder.call_count == 1
     widget(app.slider, "_limit").set_value(3).run()
@@ -665,7 +676,7 @@ def test_optional_metadata_boundaries(view, external_ids):
     assert service.author_names({"authors": [{"name": None}, {}]}) == "作者未知"
 
 
-def test_bad_metadata_ui_and_static_note_labels(app, view, monkeypatch):
+def test_bad_metadata_ui_and_literal_library_titles(app, view, monkeypatch):
     row = view["rows"][A]
     row.update(authors=[{"name": None}, {}], externalIds="bad")
     row.pop("title", None)
@@ -676,9 +687,10 @@ def test_bad_metadata_ui_and_static_note_labels(app, view, monkeypatch):
     app.button(key="open_demo").click().run()
     assert any(element.value == "标题缺失" for element in app.subheader)
     assert any("作者未知" in element.value for element in app.markdown)
-    widget(app.multiselect, "reading_widget").set_value([B]).run()
+    widget(app.selectbox, "_node").select(B).run()
+    widget(app.button, "add_node").click().run()
+    edit_library(app, {0: {"查看": True}})
     assert any(element.value == payload for element in app.text)
-    assert widget(app.text_input, "note_" + B).label == "阅读理由（第 1 篇）"
     assert all(payload not in element.label for element in app.text_input)
     assert not app.exception
 
@@ -732,7 +744,7 @@ def test_polished_sample_preserves_details_and_plot_safety(app):
     app.button(key="home_demo").click().run()
     assert not app.exception
     table = next(frame.value for frame in app.dataframe if "关联" in frame.value.columns)
-    assert list(table.columns) == ["标题", "年份", "关联", "被引次数", "原文链接"]
+    assert list(table.columns) == ["★", "标题", "年份", "关联", "被引次数", "原文链接"]
     assert not any(table["原文链接"])
     assert len(app.get("link_button")) == 0
     assert any(expander.label == "关于这个样本" for expander in app.expander)
@@ -758,16 +770,17 @@ def test_table_relation_uses_group_counts(view, monkeypatch, category, expected)
 def test_sidebar_missing_path_preserves_open_sample(app, tmp_path, action):
     app.button(key="open_demo").click().run()
     identity = app.session_state["view"]["identity"]
-    widget(app.multiselect, "reading_widget").set_value([C]).run()
-    widget(app.text_input, "note_" + C).input("保留这条备注").run()
+    widget(app.selectbox, "_node").select(C).run()
+    widget(app.button, "add_node").click().run()
+    edit_library(app, {0: {"备注": "保留这条备注"}})
     missing = tmp_path / "does-not-exist.db"
     app.text_input(key="open_path").input(str(missing)).run()
     app.button(key=action).click().run()
     assert app.error and not app.exception
     assert app.session_state["view"]["identity"] == identity
     assert [item.value for item in app.metric] == ["4", "2", "2"]
-    assert widget(app.multiselect, "reading_widget").value == [C]
-    assert widget(app.text_input, "note_" + C).value == "保留这条备注"
+    assert widget(app.selectbox, "_node").value == C
+    assert library.items(library.path_for(app.session_state["view"]))[0]["note"] == "保留这条备注"
     assert not missing.exists()
 
 
@@ -781,3 +794,138 @@ def test_load_view_rejects_saved_status_before_analysis(view, monkeypatch, statu
     with pytest.raises(ValueError, match="采集未完成"):
         service.load_view(path, run_id)
     assert not analysis.called
+
+
+def edit_library(app, changes):
+    # AppTest has no data_editor setter. Deliver the frontend JSON widget event
+    # through its runner, exercising Streamlit's actual on_change callback.
+    import json
+    editor = next(frame for frame in app.dataframe if "editor_" in frame.proto.id)
+    states = app._tree.get_widget_states()
+    for index in reversed(range(len(states.widgets))):
+        if states.widgets[index].id == editor.proto.id:
+            del states.widgets[index]
+    state = states.widgets.add()
+    state.id = editor.proto.id
+    state.string_value = json.dumps({"edited_rows": changes, "added_rows": [], "deleted_rows": []})
+    app._run(states)
+    assert not app.exception
+    return app
+
+
+@pytest.mark.parametrize("key", ["home_demo", "open_demo"])
+def test_demo_open_failure_is_caught(app, monkeypatch, key):
+    monkeypatch.setattr(service, "open_demo", Mock(side_effect=OSError("cannot open")))
+    app.button(key=key).click().run()
+    assert app.error and not app.exception
+    assert "view" not in app.session_state
+
+
+def test_library_new_app_restores_state_and_star(app):
+    app.button(key="open_demo").click().run()
+    widget(app.selectbox, "_node").select(C).run()
+    widget(app.button, "add_node").click().run()
+    edit_library(app, {0: {"状态": "在读", "优先级": "高", "备注": "刷新后继续读"}})
+    fresh = AppTest.from_file(str(ROOT / "streamlit_app.py"), default_timeout=30).run()
+    fresh.button(key="open_demo").click().run()
+    editor = next(frame.value for frame in fresh.dataframe if "editor_" in frame.proto.id)
+    assert editor.iloc[0]["状态"] == "在读" and editor.iloc[0]["优先级"] == "高"
+    assert editor.iloc[0]["备注"] == "刷新后继续读"
+    candidate = next(frame.value for frame in fresh.dataframe
+                     if "关联" in frame.value.columns
+                     and "Shared synthetic reference" in frame.value["标题"].tolist())
+    assert candidate.iloc[0]["★"] == "★"
+    assert not fresh.exception
+
+
+def test_home_library_without_sample(app, view):
+    view["result"]["sample"]["mode"] = "api"
+    library.add(library.path_for(), view, C)
+    app.run()
+    app.button(key="open_library").click().run()
+    assert "view" not in app.session_state
+    assert any("阅读库 · 1 篇" == h.value for h in app.subheader)
+    assert any("editor_" in f.proto.id for f in app.dataframe)
+    assert widget(app.checkbox, "_current").disabled
+    assert not app.exception
+
+
+def test_editor_writes_only_changed_rows_and_survives_filter(app, monkeypatch):
+    app.button(key="open_demo").click().run()
+    widget(app.selectbox, "_node").select(C).run()
+    widget(app.button, "add_node").click().run()
+    widget(app.selectbox, "_node").select(D).run()
+    widget(app.button, "add_node").click().run()
+    writer = Mock(wraps=library.update_many)
+    monkeypatch.setattr(library, "update_many", writer)
+    edit_library(app, {1: {"状态": "已读", "备注": "只改第二篇"}})
+    assert writer.call_count == 1
+    assert writer.call_args.args[1] == {D: {"status": "read", "note": "只改第二篇"}}
+    widget(app.segmented_control, "_status").set_value("待读").run()
+    edit_library(app, {0: {"优先级": "高"}})
+    assert writer.call_args.args[1] == {C: {"priority": "high"}}
+    app.run()
+    assert writer.call_count == 2
+    saved = {r["paper_id"]: r for r in library.items(library.path_for(app.session_state["view"]))}
+    assert saved[C]["note"] == "" and saved[D]["note"] == "只改第二篇"
+    edit_library(app, {0: {"备注": "字" * 2001}})
+    assert app.error and not app.exception
+    assert library.items(library.path_for(app.session_state["view"]))[0]["note"] == ""
+
+
+def test_candidate_add_and_library_remove(app):
+    app.button(key="open_demo").click().run()
+    assert any("· #1" in item.value for item in app.markdown)
+    widget(app.selectbox, "_candidate").select(C).run()
+    widget(app.button, "add_candidate").click().run()
+    edit_library(app, {0: {"查看": True}})
+    remove = next(b for b in app.button if b.label == "确认移出" and b.key.startswith("library_"))
+    remove.click().run()
+    assert not library.items(library.path_for(app.session_state["view"]))
+    assert any('在引用网络或候选论文中点“加入阅读库”。' == item.value for item in app.text)
+    assert not app.exception
+
+
+@pytest.mark.parametrize("entry", ["node", "candidate", "library"])
+def test_open_remove_popover_requires_confirmation(app, monkeypatch, entry):
+    app.button(key="open_demo").click().run()
+    widget(app.selectbox, "_node").select(C).run()
+    widget(app.button, "add_node").click().run()
+    if entry == "library":
+        edit_library(app, {0: {"查看": True}})
+    marker = "library_" if entry == "library" else "add_" + entry + "_remove_popover_"
+    popover = next(p for p in app.get("popover")
+                   if p.proto.popover.label == "移出" and marker in p.proto.id)
+    remover = Mock(wraps=library.remove)
+    monkeypatch.setattr(library, "remove", remover)
+    # Deliver the popover-open frontend event; no confirm-button event is sent.
+    states = app._tree.get_widget_states()
+    for index in reversed(range(len(states.widgets))):
+        if states.widgets[index].id == popover.proto.id:
+            del states.widgets[index]
+    event = states.widgets.add()
+    event.id = popover.proto.id
+    event.bool_value = True
+    app._run(states)
+    assert not app.exception and not remover.called
+    assert next(p for p in app.get("popover") if p.proto.id == popover.proto.id).proto.popover.open
+    path = library.path_for(app.session_state["view"])
+    assert [r["paper_id"] for r in library.items(path)] == [C]
+    confirm = next(b for b in app.button if b.label == "确认移出" and
+                   (b.key.startswith("library_") if entry == "library" else "add_" + entry + "_remove_confirm_" in b.key))
+    confirm.click().run()
+    remover.assert_called_once_with(path, C)
+    assert library.items(path) == [] and not app.exception
+
+
+def test_empty_priority_displays_blank_and_can_be_cleared(app):
+    app.button(key="open_demo").click().run()
+    widget(app.button, "add_node").click().run()
+    table = next(f.value for f in app.dataframe if "editor_" in f.proto.id)
+    assert table.iloc[0]["优先级"] == "" and "★" not in table.columns
+    edit_library(app, {0: {"优先级": "高"}})
+    edit_library(app, {0: {"优先级": ""}})
+    assert library.items(library.path_for(app.session_state["view"]))[0]["priority"] is None
+    app.run()
+    table = next(f.value for f in app.dataframe if "editor_" in f.proto.id)
+    assert table.iloc[0]["优先级"] == "" and not app.exception

@@ -1,0 +1,6 @@
+﻿论文标题,年份,来源链接,候选类别,入选依据,阅读理由,数据来源,采集范围,run_id,paperId
+"'=中文 | `tick` ![img](https://bad.invalid)
+第二行",2024,,种子,种子论文（用户选择，独立于候选排序）；由用户手动加入,'@公式 <img> \| 中文,演示数据（合成，非真实研究成果）,complete,1,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Synthetic seed B,2025,,种子,种子论文（用户选择，独立于候选排序）；由用户手动加入,,演示数据（合成，非真实研究成果）,complete,1,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+Shared synthetic reference,,,被种子引用,共同：被 2/2 颗种子引用；由用户手动加入,,演示数据（合成，非真实研究成果）,complete,1,cccccccccccccccccccccccccccccccccccccccc
+Synthetic citing paper,,,引用种子,共同：引用 2/2 颗种子；由用户手动加入,,演示数据（合成，非真实研究成果）,complete,1,dddddddddddddddddddddddddddddddddddddddd

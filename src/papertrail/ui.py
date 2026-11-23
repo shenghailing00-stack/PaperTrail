@@ -10,6 +10,7 @@ import streamlit as st
 import plotly.graph_objects as go
 
 from . import ui_service as service
+from . import library, ui_library
 
 
 STATUS_LABELS = {"ok": "完整采集", "bounded": "按预算采样", "incomplete": "未完成",
@@ -64,6 +65,7 @@ def operation_button(operation, kind, label, retry_label, enabled):
 def activate(db_path, run_id):
     # Replace the current sample only after the new snapshot passes validation.
     st.session_state["view"] = service.load_view(db_path, run_id)
+    st.session_state["library_only"] = False
 
 
 def entry_panel():
@@ -176,18 +178,21 @@ def collection_panel():
             st.json(report)
 
 
-def show_table(rows, seed_count, demo, *, category=None):
+def show_table(rows, seed_count, demo, *, category=None, saved_ids=()):
     if not rows:
         st.text("没有符合条件的论文。")
         return
-    st.dataframe(service.table_rows(rows, seed_count, demo, category=category), hide_index=True,
-                 column_config={"原文链接": st.column_config.LinkColumn("原文链接", display_text="打开原文"),
+    displayed = service.table_rows(rows, seed_count, demo, category=category)
+    displayed = [{"★": "★" if row["paperId"] in saved_ids else "", **cells}
+                 for row, cells in zip(rows, displayed)]
+    st.dataframe(displayed, hide_index=True,
+                 column_config={"★": st.column_config.TextColumn(width="small"), "原文链接": st.column_config.LinkColumn("原文链接", display_text="打开原文"),
                                 "标题": st.column_config.TextColumn(width="medium"),
                                 "被引次数": st.column_config.NumberColumn(format="%d", help="数据源提供的全局被引次数。"),
                                 "年份": st.column_config.NumberColumn(format="%d")})
 
 
-def detail(view, paper_id, prefix, reading):
+def detail(view, paper_id, prefix):
     row = view["rows"][paper_id]
     result = view["result"]
     demo = result["sample"]["mode"] == "offline_fixture"
@@ -205,15 +210,12 @@ def detail(view, paper_id, prefix, reading):
         original, add = st.columns(2)
         if link := service.source_link(row, demo):
             original.link_button("打开原文", link, type="primary")
-        if add.button("加入阅读清单", key=prefix + "add_node"):
-            if paper_id not in reading["ids"]:
-                reading["ids"].append(paper_id)
-            st.session_state[prefix + "reading_widget"] = list(reading["ids"])
-            st.toast("已加入阅读清单")
+        with add:
+            ui_library.favorite(view, paper_id, prefix + "add_node")
 
 
 
-def graph_panel(view, prefix, reading):
+def graph_panel(view, prefix):
     with st.popover("显示设置"):
         limit = st.slider("网络显示节点上限", min_value=3, max_value=200, value=100, step=1,
                           key=prefix + "limit", help="优先显示种子，其余按稳定顺序显示；此限制不改变样本、候选与统计。")
@@ -229,7 +231,7 @@ def graph_panel(view, prefix, reading):
     rows = view["rows"]
     chosen = st.selectbox("选择论文节点查看详情", list(rows), format_func=lambda pid: paper_label(rows[pid]),
                           key=selection_key)
-    detail(view, chosen, prefix, reading)
+    detail(view, chosen, prefix)
     with st.expander("引用关系列表"):
         st.dataframe([{"引用者": service.display_text(rows[a].get("title"), a),
                        "被引用者": service.display_text(rows[b].get("title"), b)}
@@ -239,8 +241,9 @@ def graph_panel(view, prefix, reading):
 def candidates_panel(view, prefix):
     stats = view["result"]["statistics"]
     demo = view["result"]["sample"]["mode"] == "offline_fixture"
+    saved_ids = {row["paper_id"] for row in library.items(library.path_for(view))}
     st.subheader("你的种子论文")
-    show_table(view["result"]["seeds"], stats["seed_count"], demo)
+    show_table(view["result"]["seeds"], stats["seed_count"], demo, saved_ids=saved_ids)
     options = {}
     search, filters, order = st.columns([3, 1, 2], vertical_alignment="bottom")
     keyword = search.text_input("搜索论文", placeholder="搜索标题或摘要", key=prefix + "keywords",
@@ -271,7 +274,13 @@ def candidates_panel(view, prefix):
     for category, rows in groups.items():
         title, explanation = labels[category]
         st.subheader(f"{title} · {len(rows)} 篇", help=explanation)
-        show_table(rows, stats["seed_count"], demo, category=category)
+        show_table(rows, stats["seed_count"], demo, category=category, saved_ids=saved_ids)
+
+    candidates = {row["paperId"]: row for rows in groups.values() for row in rows}
+    if candidates:
+        selected = st.selectbox("选择候选论文", list(candidates),
+                                format_func=lambda pid: paper_label(candidates[pid]), key=prefix + "candidate")
+        ui_library.favorite(view, selected, prefix + "add_candidate")
 
 
 def statistics_panel(view, prefix):
@@ -307,30 +316,6 @@ def statistics_panel(view, prefix):
 
 
 
-def reading_panel(view, prefix, reading):
-    st.caption("阅读清单只保存在当前页面，关闭前请先下载。")
-    key = prefix + "reading_widget"
-    if key not in st.session_state:
-        st.session_state[key] = list(reading["ids"])
-    rows = view["rows"]
-    selected = st.multiselect("阅读清单论文", list(rows), key=key, format_func=lambda pid: paper_label(rows[pid]))
-    reading["ids"] = list(selected)
-    for index, paper_id in enumerate(selected, 1):
-        note_key = prefix + "note_" + paper_id
-        if note_key not in st.session_state:
-            st.session_state[note_key] = reading["notes"].get(paper_id, "")
-        st.text(service.display_text(rows[paper_id].get("title"), "标题缺失"))
-        reading["notes"][paper_id] = st.text_input(f"阅读理由（第 {index} 篇）",
-                                                  max_chars=500, key=note_key)
-    csv_data, markdown = service.export_reading_list(view, selected, reading["notes"])
-    name = f"papertrail-run-{view['identity'][1]}"
-    csv_column, md_column = st.columns(2)
-    csv_column.download_button("下载 CSV", csv_data, file_name=name + ".csv", mime="text/csv",
-                       disabled=not selected, key=prefix + "csv", on_click="ignore")
-    md_column.download_button("下载 Markdown", markdown, file_name=name + ".md", mime="text/markdown",
-                       disabled=not selected, key=prefix + "md", on_click="ignore")
-
-
 def home_panel():
     st.caption("从几篇论文出发，找到下一篇该读的。")
     demo, saved, new = st.columns(3)
@@ -356,7 +341,7 @@ def sample_overview(view):
     if sample["mode"] == "offline_fixture":
         badge.badge("演示数据", color="gray", help="论文与引用量均为合成内容，非真实研究成果。")
     st.markdown(":gray[" + f"{stats['paper_count']} 篇论文 · {view['graph'].number_of_edges()} 条引用关系 · "
-                f"采集于 {(sample.get('started_at') or '日期未知')[:10]}" + "]")
+                f"采集于 {(sample.get('started_at') or '日期未知')[:10]} · #{sample['run_id']}" + "]")
     # One shared sample caveat; tab-specific guidance stays near its controls.
     st.text("按预算采集的部分样本，不代表该领域的全部文献。")
     with st.expander("关于这个样本"):
@@ -401,22 +386,38 @@ def main():
     st.title("PaperTrail")
     try:
         entry_panel()
+        with st.sidebar:
+            count = len(library.items(library.path_for()))
+            if st.button(f"我的阅读库 · {count} 篇", key="open_library"):
+                st.session_state["library_only"] = True
+        if not st.session_state.get("view") and not st.session_state.get("library_only"):
+            home_panel()
     except (ValueError, OSError, sqlite3.Error) as error:
         st.error("操作失败，未打开新样本：" + service.safe(str(error)) if isinstance(error, ValueError)
                  else "本地文件或数据库访问失败，请检查路径、权限和数据库格式。")
     view = st.session_state.get("view")
+    if st.session_state.get("library_only"):
+        if st.button("返回样本" if view else "返回首页", key="close_library"):
+            st.session_state["library_only"] = False
+            st.rerun()
+        try:
+            ui_library.panel()
+        except (ValueError, OSError, sqlite3.Error):
+            st.error("阅读库访问失败，请检查文件权限和数据库格式。")
+        return
     if not view:
-        home_panel()
         return
     sample_overview(view)
     prefix = hashlib.sha256(repr(view["identity"]).encode()).hexdigest()[:16] + "_"
-    reading = st.session_state.setdefault("reading_lists", {}).setdefault(view["identity"], {"ids": [], "notes": {}})
-    tabs = st.tabs(["引用网络", "候选论文", "样本统计", "阅读清单"])
-    with tabs[0]:
-        graph_panel(view, prefix, reading)
-    with tabs[1]:
-        candidates_panel(view, prefix)
-    with tabs[2]:
-        statistics_panel(view, prefix)
-    with tabs[3]:
-        reading_panel(view, prefix, reading)
+    tabs = st.tabs(["引用网络", "候选论文", "样本统计", "阅读库"])
+    try:
+        with tabs[0]:
+            graph_panel(view, prefix)
+        with tabs[1]:
+            candidates_panel(view, prefix)
+        with tabs[2]:
+            statistics_panel(view, prefix)
+        with tabs[3]:
+            ui_library.panel(view)
+    except (ValueError, OSError, sqlite3.Error):
+        st.error("阅读库访问失败，请检查文件权限和数据库格式。")
