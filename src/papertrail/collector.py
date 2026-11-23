@@ -127,6 +127,7 @@ def collect(client, store, inputs, *, citation_budget=150, reference_cap=10000,
         report = _collect(client, store, inputs, run_id=run_id, citation_budget=citation_budget,
                           reference_cap=reference_cap, page_size=page_size, ttl=ttl, refresh=refresh)
         report.update(run_id=run_id, source_key=client.source_key, request_attempts=client.budget.used,
+                      attempt_status_counts=dict(client.budget.attempt_status_counts),
                       request_budget=request_budget)
         sample = store.get_sample(run_id)
         report["sample_totals"] = {"papers": len(sample["paper_ids"]), "citation_edges": len(sample["edges"]),

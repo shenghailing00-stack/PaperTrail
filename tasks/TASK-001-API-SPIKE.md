@@ -78,7 +78,7 @@ Show changed paths, commands to run, output example with sensitive values redact
 - 三个端点均显式指定 fields，包含摘要与引用计数；引用端点额外请求关系证据。
 - 独立 `--references-limit` / `--citations-limit`，默认 5、范围 1..1000。
 - `--references-only` 只请求一页参考文献（最多 1000），不自动翻页。
-- 相邻请求含重试至少间隔 1.1 秒；每个端点最多 3 次尝试，匿名第二次 429 停止。
+- 当时相邻请求含重试至少间隔 1.1 秒（TASK-005.1 已调整为 2.0 秒）；每个端点最多 3 次尝试，匿名第二次 429 停止。
 - 离线验证先于真实请求，8 组核心场景；不提前实现 TASK-002。
 
 ## 执行结果（2026-10-28，Asia/Shanghai）
@@ -106,7 +106,7 @@ ARXIV/DOI 等前缀 ID 可用于 paper 端点；引用端点的 limit 上限为 
 contexts、intents、isInfluential。缺少 next 仍不证明现实参考文献完整覆盖。
 
 [官方 API 介绍](https://webflow.semanticscholar.org/product/api) 说明匿名访问
-共享限流资源、初始 Key 速率为 1 RPS；程序统一采用 1.1 秒起始间隔。
+共享限流资源、初始 Key 速率为 1 RPS；当时程序统一采用 1.1 秒起始间隔（TASK-005.1 当前为 2.0 秒，下方实测时间保留历史原值）。
 [官方使用条款](https://webflow.semanticscholar.org/product/api/license) 已查阅，
 报告保留 Semantic Scholar 来源标注，真实响应仅留本地，不对再分发许可作推断。
 原主站介绍/许可页面通过浏览工具返回 403，使用官方 webflow 子域读取。

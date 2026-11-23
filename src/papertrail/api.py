@@ -20,7 +20,7 @@ PAPER_FIELDS = (
 # These endpoints accept bare paper fields, NOT citedPaper.title/citingPaper.title.
 RELATION_FIELDS = ("contexts", "intents", "isInfluential", *PAPER_FIELDS)
 TIMEOUT = (5, 20)
-MIN_INTERVAL = 1.1
+MIN_INTERVAL = 2.0
 MAX_ATTEMPTS = 3
 MAX_RETRY_WAIT = 10
 
@@ -30,6 +30,7 @@ class RequestBudget:
     def __init__(self, limit):
         self.limit = limit
         self.used = 0
+        self.attempt_status_counts = {}
 
     def take(self):
         if self.used >= self.limit:
@@ -174,6 +175,10 @@ class S2Client:
                     BASE_URL + path, params=params, timeout=TIMEOUT, allow_redirects=False,
                 ) as response:
                     event["http_status"] = response.status_code
+                    if self.budget is not None:
+                        status = str(response.status_code)
+                        counts = self.budget.attempt_status_counts
+                        counts[status] = counts.get(status, 0) + 1
                     if response.status_code == 200:
                         try:
                             body = response.json()

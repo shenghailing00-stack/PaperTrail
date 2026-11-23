@@ -51,7 +51,7 @@ def test_success_fields_direction_deduplication_and_pacing(monkeypatch, data, of
     get.side_effect = lambda *a, **kw: (starts.append(offline[0]), next(replies))[1]
     report = spike.run_probe(client, "ARXIV:0000.00000", 7, 9)
     assert report["status"] == "ok" and report["http_attempts"] == 3
-    assert all(b - a >= 1.1 for a, b in zip(starts, starts[1:]))
+    assert all(b - a >= 2.0 for a, b in zip(starts, starts[1:]))
     calls = get.call_args_list
     assert set(calls[0].kwargs["params"]["fields"].split(",")) == set(spike.PAPER_FIELDS)
     assert calls[1].kwargs["params"] == {"fields": ",".join(spike.RELATION_FIELDS), "offset": 0, "limit": 7}
@@ -200,7 +200,7 @@ def test_network_errors_are_bounded_and_safe(monkeypatch, offline, exception, ki
     else:
         assert result["error"]["kind"] == kind and result["stop_run"]
     assert get.call_count == attempts and "test-secret" not in json.dumps(result)
-    assert all(b - a >= 1.1 for a, b in zip(starts, starts[1:]))
+    assert all(b - a >= 2.0 for a, b in zip(starts, starts[1:]))
     assert all(event["error_kind"] == kind for event in result["attempts"][:attempts - int(recover)])
 
 

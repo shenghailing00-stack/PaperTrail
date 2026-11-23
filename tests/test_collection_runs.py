@@ -52,6 +52,7 @@ def response(body=None, status=200):
 
 def test_exact_membership_raw_counts_and_source(store, client):
     report = collect(client, store, SEEDS, page_size=2)
+    assert report["attempt_status_counts"] == {}  # Fixture calls are not HTTP responses.
     sample = store.get_sample(report["run_id"])
     assert sample["source"] == FIXTURE_SOURCE and sample["source_key"] == client.source_key
     assert sample["inputs"] == SEEDS and sample["config"]["citation_budget"] == 150
@@ -276,10 +277,33 @@ def test_request_budget_counts_actual_http_attempts_including_retries(store, mon
     try:
         report = collect(live, store, SEEDS[:1], page_size=1, request_budget=limit)
         assert get.call_count == report["request_attempts"] == limit
+        assert report["attempt_status_counts"] == ({"200": 1} if limit == 1 else {"200": 2, "503": 2})
         assert report["status"] == "incomplete"
         assert report["seeds"][0]["references"]["error_kind"] == "request_budget"
         sample = store.get_sample(report["run_id"])
         assert sample["edges"] == ([[A, C]] if limit == 4 else [])
+    finally:
+        live.session.close()
+
+
+def test_status_counts_cover_pages_retries_timeout_and_reset_on_cached_run(store, monkeypatch):
+    live = api.S2Client("synthetic-key")
+    get = Mock(side_effect=[response({"paperId": A}), response(status=429),
+        response({"data": [{"citedPaper": {"paperId": C}}], "next": 1}),
+        response({"data": [{"citedPaper": {"paperId": D}}]}),
+        requests.exceptions.Timeout("synthetic-key"), response({"data": []})])
+    monkeypatch.setattr(live.session, "get", get)
+    try:
+        first = collect(live, store, SEEDS[:1], page_size=1)
+        assert first["status"] == "ok" and first["request_attempts"] == get.call_count == 6
+        assert first["attempt_status_counts"] == {"200": 4, "429": 1}
+        saved = store.get_sample(first["run_id"])["report"]
+        assert saved["attempt_status_counts"] == first["attempt_status_counts"]
+        second = collect(live, store, SEEDS[:1], page_size=1)
+        assert second["status"] == "ok" and second["request_attempts"] == 0
+        assert second["attempt_status_counts"] == {} and get.call_count == 6
+        assert first["attempt_status_counts"] == {"200": 4, "429": 1}
+        assert store.get_sample(first["run_id"])["report"] == saved
     finally:
         live.session.close()
 
