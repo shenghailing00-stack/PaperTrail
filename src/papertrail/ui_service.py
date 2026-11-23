@@ -198,6 +198,13 @@ def open_demo(directory):
 
 def load_view(db_path, run_id):
     """Snapshot loaded on explicit open, never cache DB connections or clients."""
+    # Read the saved status explicitly for the UI message; analysis still
+    # performs its full validation before any new view can be returned.
+    with PaperStore.open_readonly(db_path) as store:
+        run = store.connection.execute(
+            "SELECT status FROM collection_runs WHERE run_id = ?", (run_id,)).fetchone()
+        if run is not None and run["status"] not in {"ok", "bounded"}:
+            raise ValueError("采集未完成，无法分析。已获取的部分会保留，可以稍后重试。")
     result = safe(discover(db_path, run_id, include_seeds=True))
     graph = load_graph(db_path, run_id)
     # The graph is for drawing only; metrics always come from discover's full run.
@@ -270,12 +277,19 @@ def relation_text(row, seed_count):
     return "；".join(reasons)
 
 
-def table_rows(rows, seed_count, demo):
-    return [{"论文标题": display_text(row.get("title"), "标题缺失"), "年份": row.get("year"),
-             "关系依据": relation_text(row, seed_count), "来源全局引用量": row["global_citation_count"],
-             "样本入度": row["local_in_degree"], "样本出度": row["local_out_degree"],
-             "名次": row.get("rank"), "同值篇数（含自身）": row.get("tie_count"),
-             "来源链接": source_link(row, demo)} for row in rows]
+def table_rows(rows, seed_count, demo, *, category=None):
+    count_fields = {"shared_reference": "referenced_by_seed_count", "shared_citing": "cites_seed_count"}
+    displayed = []
+    for row in rows:
+        if row["is_seed"]:
+            relation = "种子"
+        else:
+            count = row[count_fields[category]]
+            relation = ("共同 · " if count >= 2 else "") + f"{count}/{seed_count} 篇种子"
+        displayed.append({"标题": display_text(row.get("title"), "标题缺失"), "年份": row.get("year"),
+                          "关联": relation, "被引次数": row["global_citation_count"],
+                          "原文链接": source_link(row, demo)})
+    return displayed
 
 
 def network_figure(graph, max_nodes=100):
@@ -291,17 +305,17 @@ def network_figure(graph, max_nodes=100):
         x1, y1 = map(float, pos[b])
         if a == b:
             shapes.append(dict(type="circle", x0=x0, x1=x0 + .12, y0=y0, y1=y0 + .12,
-                               line_color="#94a3b8"))
+                               line_color="#C7C7CC"))
             annotations.append(dict(x=x0 + .12, y=y0 + .06, ax=x0 + .10, ay=y0 + .10,
-                                    xref="x", yref="y", axref="x", ayref="y", arrowhead=2, text=""))
+                                    xref="x", yref="y", axref="x", ayref="y", arrowhead=2, arrowcolor="#C7C7CC", text=""))
         else:
             # Shorten at both ends so the arrowhead remains visible beside markers.
             annotations.append(dict(x=x0 + .88*(x1-x0), y=y0 + .88*(y1-y0),
                                   ax=x0 + .12*(x1-x0), ay=y0 + .12*(y1-y0),
                                   xref="x", yref="y", axref="x", ayref="y", text="",
-                                  showarrow=True, arrowhead=2, arrowwidth=1.3, arrowcolor="#64748b"))
-    for is_seed, label, color, symbol in ((True, "种子", "#d97706", "diamond"),
-                                         (False, "非种子", "#2563eb", "circle")):
+                                  showarrow=True, arrowhead=2, arrowwidth=1.3, arrowcolor="#C7C7CC"))
+    for is_seed, label, color, symbol in ((False, "相关论文", "#8E8E93", "circle"),
+                                         (True, "种子论文", "#007AFF", "diamond")):
         group = [p for p in nodes if graph.nodes[p]["is_seed"] == is_seed]
         figure.add_trace(go.Scatter(x=[float(pos[p][0]) for p in group],
                                    y=[float(pos[p][1]) for p in group], mode="markers",

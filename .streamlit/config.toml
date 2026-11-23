@@ -4,3 +4,17 @@ gatherUsageStats = false
 [server]
 address = "127.0.0.1"
 headless = true
+
+[theme]
+base = "light"
+primaryColor = "#007AFF"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F5F7"
+textColor = "#1D1D1F"
+font = '-apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
+baseRadius = "large"
+showWidgetBorder = false
+headingFontSizes = ["2rem", "1.5rem", "1.2rem"]
+
+[client]
+toolbarMode = "minimal"

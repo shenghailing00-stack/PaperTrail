@@ -271,8 +271,8 @@ def test_demo_widgets_select_node_reading_and_rerun(app, monkeypatch):
     monkeypatch.setattr(service, "resolve_inputs", forbidden)
     app.button(key="open_demo").click().run()
     assert not app.exception
-    assert [item.value for item in app.metric] == ["4", "5", "2", "2", "2"]
-    assert any("演示数据" in item.value for item in app.warning)
+    assert [item.value for item in app.metric] == ["4", "2", "2"]
+    assert any("演示数据" in item.value for item in app.markdown)
     widget(app.selectbox, "_node").select(C).run()
     assert any(item.value == "Example abstract." for item in app.text)
     widget(app.button, "add_node").click().run()
@@ -316,7 +316,7 @@ def test_new_collection_explicit_confirmation_and_no_duplicate_calls(app, monkey
             return collect(client, store, seeds, citation_budget=budget, request_budget=request_budget)
     collection = Mock(side_effect=fixture_collection)
     monkeypatch.setattr(service, "collect_online", collection)
-    app.radio(key="entry_mode").set_value("新建采集").run()
+    app.segmented_control(key="entry_mode").set_value("新建采集").run()
     app.text_area(key="seed_text").input("title").run()
     assert not queried.called and operation_button(app, "collect").disabled
     app.checkbox(key="authorized").check().run()
@@ -349,13 +349,18 @@ def test_bounded_and_failed_sample_ui(app, tmp_path, request_budget, expected):
                          citation_budget=1, page_size=2, request_budget=request_budget)
     assert report["status"] == expected
     app.button(key="open_demo").click().run()
+    previous_identity = app.session_state["view"]["identity"]
     app.text_input(key="open_path").input(str(path)).run()
-    app.button(key="FormSubmitter:open_run-按 run_id 打开").click().run()
+    app.button(key="FormSubmitter:open_run-按编号打开").click().run()
     assert not app.exception
     if expected == "bounded":
-        assert any("正常预算截断" in warning.value for warning in app.warning)
+        assert any("按预算采样" in item.value for item in app.text)
+        assert any("部分样本" in item.value for item in app.text)
+        assert any("达到预算" in item.value for item in app.text)
     else:
-        assert app.error and len(app.metric) == 0
+        assert any("采集未完成" in error.value for error in app.error)
+        assert app.session_state["view"]["identity"] == previous_identity
+        assert [item.value for item in app.metric] == ["4", "2", "2"]
 
 
 def test_reading_state_separate_for_same_run_id_different_databases(app, tmp_path):
@@ -365,7 +370,7 @@ def test_reading_state_separate_for_same_run_id_different_databases(app, tmp_pat
     other_path, run_id = service.open_demo(tmp_path / "other")
     assert run_id == first_identity[1]
     app.text_input(key="open_path").input(other_path).run()
-    app.button(key="FormSubmitter:open_run-按 run_id 打开").click().run()
+    app.button(key="FormSubmitter:open_run-按编号打开").click().run()
     assert widget(app.multiselect, "reading_widget").value == []
     widget(app.multiselect, "reading_widget").set_value([D]).run()
     app.button(key="open_demo").click().run()
@@ -395,8 +400,11 @@ def test_network_annotations_are_batched_and_preserve_direction(size, monkeypatc
             assert arrow.ax == pytest.approx(positions[a][0] + .12 * (positions[b][0] - positions[a][0]))
             assert arrow.y == pytest.approx(positions[a][1] + .88 * (positions[b][1] - positions[a][1]))
             assert arrow.arrowhead == 2
-    assert figure.data[0].marker.color == "#d97706" and figure.data[1].marker.color == "#2563eb"
-    assert [item[0] for trace in figure.data for item in trace.customdata] == nodes
+    assert figure.data[0].marker.color == "#8E8E93" and figure.data[1].marker.color == "#007AFF"
+    assert figure.data[-1].marker.symbol == "diamond"
+    drawn = [item[0] for trace in figure.data for item in trace.customdata]
+    assert len(drawn) == len(nodes) and set(drawn) == set(nodes)
+    assert all(graph.nodes[item[0]]["is_seed"] for item in figure.data[-1].customdata)
     assert figure.layout.clickmode == "event+select"
 
 
@@ -469,7 +477,7 @@ def test_keyword_ui_uses_full_run_despite_filters_and_node_cap(app, monkeypatch)
         {"关键词": "synthetic", "标题出现论文数": 4, "摘要出现论文数": 0, "标题或摘要出现论文数": 4},
         {"关键词": "example", "标题出现论文数": 0, "摘要出现论文数": 1, "标题或摘要出现论文数": 1}]
     assert len(list(spy.call_args.args[0])) == 4
-    assert any("不代表整个研究领域" in caption.value for caption in app.caption)
+    assert any("不代表该领域的全部文献" in item.value for item in app.text)
     assert not app.exception
 
 
@@ -532,7 +540,7 @@ def test_operation_errors_and_interruptions_stay_failed(monkeypatch):
 def configure_query_app(app, monkeypatch, *, response=None):
     query = Mock(return_value=response or [[{"paperId": A, "title": "Pre-training", "authors": [{"name": None}]}]])
     monkeypatch.setattr(service, "resolve_inputs", query)
-    app.radio(key="entry_mode").set_value("新建采集").run()
+    app.segmented_control(key="entry_mode").set_value("新建采集").run()
     app.text_area(key="seed_text").input("Pre-training").run()
     app.checkbox(key="authorized").check().run()
     return query
@@ -651,7 +659,7 @@ def test_optional_metadata_boundaries(view, external_ids):
     row.pop("abstract", None)
     assert "张三" in ui.paper_label(row) and "标题缺失" in ui.paper_label(row)
     assert service.source_link(row) == "https://www.semanticscholar.org/paper/" + A
-    assert service.table_rows([row], 2, False)[0]["论文标题"] == "标题缺失"
+    assert service.table_rows([row], 2, False)[0]["标题"] == "标题缺失"
     assert "标题缺失" in service.export_reading_list(view, [A], {})[0].decode("utf-8-sig")
     assert service.author_names({"authors": {"name": "not a list"}}) == "作者未知"
     assert service.author_names({"authors": [{"name": None}, {}]}) == "作者未知"
@@ -666,8 +674,8 @@ def test_bad_metadata_ui_and_static_note_labels(app, view, monkeypatch):
     view["rows"][B]["title"] = payload
     monkeypatch.setattr(service, "load_view", Mock(return_value=view))
     app.button(key="open_demo").click().run()
-    assert any(element.value == "标题缺失" for element in app.text)
-    assert any(element.value == "作者未知" for element in app.text)
+    assert any(element.value == "标题缺失" for element in app.subheader)
+    assert any("作者未知" in element.value for element in app.markdown)
     widget(app.multiselect, "reading_widget").set_value([B]).run()
     assert any(element.value == payload for element in app.text)
     assert widget(app.text_input, "note_" + B).label == "阅读理由（第 1 篇）"
@@ -699,3 +707,77 @@ def test_markdown_untrusted_cells_are_literal_and_source_link_is_explicit(view):
     assert "![" not in outside and "<img" not in outside and "javascript:" not in outside
     assert "bad.invalid" not in outside
     assert "[查看来源](<https://example.org/paper_%28one%29?q=%E4%B8%AD%E6%96%87>)" in outside
+
+
+def test_home_navigation_keeps_network_explicit(app, monkeypatch):
+    network = Mock(side_effect=AssertionError("Navigation must stay offline"))
+    monkeypatch.setattr(service, "resolve_inputs", network)
+    monkeypatch.setattr(service, "collect_online", network)
+    app.button(key="home_new").click().run()
+    assert app.segmented_control(key="entry_mode").value == "新建采集"
+    assert not app.checkbox(key="authorized").value
+    assert operation_button(app, "query_seeds").disabled
+    app.text_area(key="seed_text").input("A paper title").run()
+    assert operation_button(app, "query_seeds").disabled
+    app.checkbox(key="authorized").check().run()
+    assert not operation_button(app, "query_seeds").disabled
+    assert not network.called
+    app.button(key="home_saved").click().run()
+    assert app.segmented_control(key="entry_mode").value == "已有样本"
+    assert not app.exception
+
+
+def test_polished_sample_preserves_details_and_plot_safety(app):
+    import json
+    app.button(key="home_demo").click().run()
+    assert not app.exception
+    table = next(frame.value for frame in app.dataframe if "关联" in frame.value.columns)
+    assert list(table.columns) == ["标题", "年份", "关联", "被引次数", "原文链接"]
+    assert not any(table["原文链接"])
+    assert len(app.get("link_button")) == 0
+    assert any(expander.label == "关于这个样本" for expander in app.expander)
+    years = next(chart for chart in app.get("plotly_chart") if "years" in chart.proto.id)
+    spec = json.loads(years.proto.spec)
+    assert spec["layout"]["yaxis"]["rangemode"] == "tozero"
+    assert spec["layout"]["yaxis"]["fixedrange"] is True
+    assert spec["layout"]["xaxis"]["fixedrange"] is True
+    assert json.loads(years.proto.config)["scrollZoom"] is False
+
+
+@pytest.mark.parametrize("category, expected", [
+    ("shared_reference", "1/3 篇种子"), ("shared_citing", "共同 · 2/3 篇种子")])
+def test_table_relation_uses_group_counts(view, monkeypatch, category, expected):
+    # One paper can belong to both groups with different counts.
+    row = dict(view["rows"][C], referenced_by_seed_count=1, cites_seed_count=2)
+    monkeypatch.setattr(service, "relation_text", Mock(side_effect=AssertionError("No prose parsing")))
+    assert service.table_rows([row], 3, True, category=category)[0]["关联"] == expected
+    assert service.table_rows([view["rows"][A]], 3, True)[0]["关联"] == "种子"
+
+
+@pytest.mark.parametrize("action", ["list_runs", "FormSubmitter:open_run-按编号打开"])
+def test_sidebar_missing_path_preserves_open_sample(app, tmp_path, action):
+    app.button(key="open_demo").click().run()
+    identity = app.session_state["view"]["identity"]
+    widget(app.multiselect, "reading_widget").set_value([C]).run()
+    widget(app.text_input, "note_" + C).input("保留这条备注").run()
+    missing = tmp_path / "does-not-exist.db"
+    app.text_input(key="open_path").input(str(missing)).run()
+    app.button(key=action).click().run()
+    assert app.error and not app.exception
+    assert app.session_state["view"]["identity"] == identity
+    assert [item.value for item in app.metric] == ["4", "2", "2"]
+    assert widget(app.multiselect, "reading_widget").value == [C]
+    assert widget(app.text_input, "note_" + C).value == "保留这条备注"
+    assert not missing.exists()
+
+
+@pytest.mark.parametrize("status", ["incomplete", "running", "interrupted", "error"])
+def test_load_view_rejects_saved_status_before_analysis(view, monkeypatch, status):
+    path, run_id = view["identity"]
+    with PaperStore(path) as store, store.connection:
+        store.connection.execute("UPDATE collection_runs SET status=? WHERE run_id=?", (status, run_id))
+    analysis = Mock(side_effect=AssertionError("Incomplete sample must not reach analysis"))
+    monkeypatch.setattr(service, "discover", analysis)
+    with pytest.raises(ValueError, match="采集未完成"):
+        service.load_view(path, run_id)
+    assert not analysis.called
