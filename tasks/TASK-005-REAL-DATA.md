@@ -1,9 +1,11 @@
 # TASK-005 — 真实 Semantic Scholar 数据端到端验证
 
-**状态：** 🔴 **阻塞**，等待新的 Semantic Scholar API Key。Phase 0 预检完成；Phase 1 到 1D 的真实请求都返回 HTTP 429，没有取得任何引用关系数据。
-**记录日期：** 2026-11-19（America/Los_Angeles）。
-**版本：** `main` / `53415cd feat: add Streamlit research exploration UI`。本任务没有修改正式源码。
-**执行者：** Codex 执行 Phase 0–1C 和 Phase 1D 的脚本准备；Owner 手动运行 Phase 1D；Claude Code 负责独立审查与诊断，并整理本记录。
+**状态：** 🟡 **基本完成（有限制）**。已用新 Key 取得真实样本 run 5（2 篇种子，`bounded`，60 篇论文 / 60 条边），离线分析、候选发现、UI、导出、缓存复用和标题搜索均已实测通过。未完成：第 3 篇种子 Robot Synesthesia 的关系数据（S2 间歇性 429）。详见文末"解除阻塞后的执行与验收"。
+**记录日期：** 2026-11-19 建档（阻塞）；2026-11-23 更新为最终状态（America/Los_Angeles）。
+**版本：** 阻塞期间为 `53415cd`，没有修改正式源码；解除阻塞后的唯一代码改动是 TASK-005.1（`baa5074`）。
+**执行者：** Codex 执行 Phase 0–1C、Phase 1D 的脚本准备、TASK-005.1 修复和只读验收；Owner 手动运行所有真实请求和 UI 验收；Claude Code 负责独立审查与诊断，并整理本记录。
+
+> 下面"阻塞结论"到"Owner 自查问题"是 2026-11-19 的原始记录，保留不改；其中部分判断在后续执行中被修正，修正内容见文末。
 **证据目录：** `output/task005-real/`（已被 `.gitignore:228` 排除，不进入 Git）。
 
 ## 阻塞结论
@@ -76,3 +78,52 @@
 
 1. 为什么在 Key 失效、但代码完全正确的情况下，最终表现是 429 而不是 401 或 403？这说明"错误码"和"根因"之间是什么关系？
 2. Phase 1D 的三次运行里，为什么只有第 3 次能当作证据？一个可靠的对照实验需要控制住哪些变量？
+
+## 解除阻塞后的执行与验收（2026-11-19 至 2026-11-23）
+
+新 Key 于 2026-11-19 批准（S2 当时提示有积压）。真实请求都由 Owner 在断开代理后手动运行，命令内置检查：代理没有断开或结果文件已存在时，拒绝运行。
+
+| 步骤 | 时间（UTC） | 结果 | 证据 |
+|---|---|---|---|
+| 单请求测试 | 11-20 00:20 / 00:22 | 开代理 429；断开后 200，返回 GelSight 的正确 paperId 和标题 | `phase1d-direct-run4.json`、`phase1d-direct.json` |
+| Phase 1R，3 篇种子（run 3） | 11-20 00:26 | `incomplete`，26/30 次尝试。3 篇种子都解析成功，取得 50 条边；Touch and Go 的 citations 被 429 拦下，Robot Synesthesia 的关系被跳过 | `collect-phase1r.json`、`acceptance-phase1r.md` |
+| TASK-005.1 修复 | — | 请求间隔从 1.1 秒改为 2.0 秒；报告新增 `attempt_status_counts`（提交 `baa5074`） | Git 历史 |
+| 补跑（run 4） | 11-20 00:51 | `incomplete`，6 次尝试 = 2×200 + 4×429。补齐了 Touch and Go 的 citations；Robot Synesthesia 的 references 连续 3 次 429 | `collect-phase1r2.json` |
+| 两种子缓存运行（run 5） | 11-23 11:06 | ✅ **`bounded`，0 次 HTTP 请求**，4 个方向全部命中缓存；60 篇论文、60 条边 | `collect-phase1r3.json` |
+| Phase 2 离线分析（run 5） | 11-23 | ✅ 60 条边方向全部正确；58 篇候选的依据全部与边一致；截断警告保留 | `acceptance-phase2.md`、`analysis-phase2.json`、`discovery-phase2.json` |
+| UI 人工验收（run 5） | 11-23 | ✅ 顶部状态和数字、引用网络详情、候选分组、样本统计、数据质量表都正确 | Owner 截图 |
+| 导出 | 11-23 | ✅ CSV（带 BOM）和 Markdown 都包含标题、年份、来源链接、关系依据、阅读理由、数据来源、采集范围、run_id、paperId；Markdown 保留了截断警告 | `papertrail-run-5.csv`、`papertrail-run-5.md` |
+| 标题搜索（UI） | 11-23 | ✅ 输入 "Robot Synesthesia: In-Hand Manipulation with Visuotactile Sensing" 后返回目标论文；输入框保留原样的 "In-Hand"；"核对来源"打开 DOI 对应的 IEEE Xplore 页面，标题和作者一致 | Owner 截图 |
+
+**验收清单最终状态：**
+
+| 项目 | 状态 |
+|---|---|
+| 三篇种子元数据、DOI 和 arXiv 解析、DOI 路径编码 | ✅（run 3） |
+| 标题检索与连字符处理 | ✅（UI 只显示标题和来源链接，不显示 paperId，所以只能按标题、DOI 和作者核对） |
+| References 和 Citations 分页、offset 推进、无重复 | ✅（5 个方向；Robot Synesthesia 的两个方向未覆盖） |
+| 请求预算严格生效 | ✅（每次 run 都没有超过上限） |
+| 截断样本进入分析 | ✅（run 5） |
+| 候选论文有可解释的种子关系 | ✅（CoRA-VTLA、TacBridge 同时引用两篇种子，在 UI 分组视图中排在"引用种子"组的第 1 名） |
+| 第二次运行利用缓存 | ✅（run 4 和 run 5） |
+| UI 打开真实样本、CSV 和 Markdown 导出 | ✅ |
+| Robot Synesthesia 的关系数据 | ❌ 未取得（S2 间歇性 429） |
+
+**对 2026-11-19 原始判断的修正：**
+
+- **"代理出口 IP 被限流"**：旧 Key 时期直连也是 429，所以当时排除了代理。新 Key 时期，开代理 1 次 429、直连 1 次 200，但这只是各 1 次的对比；之后直连也频繁 429。**代理是否有影响，至今没有定论**。保守起见，真实请求仍在断开代理后运行。
+- **"1.1 秒间隔太紧"**：改成 2.0 秒后，429 的比例没有下降（run 4 中 6 次尝试有 4 次 429，空闲 23 分钟后的第一个请求也是 429）。**间隔不是主要原因**。TASK-005.1 的价值在于 `attempt_status_counts` 让这一点可以被验证。
+- **目前能确定的**：旧 Key 失效是阻塞的根因；换了新 Key 后，S2 仍然间歇性限流，从客户端这边查不出原因。已经成功的页会进入缓存，之后可以复用。
+
+**数据特点与非阻塞问题：**
+
+- citations 方向是按从新到旧取的，截断后的样本偏向最新论文；其中 2 篇的年份是 2027（期刊 online-first），属于数据源特点。
+- CLI `discover.py` 默认按 `referenced_by_seed_count` 排序，在真实数据上有 40 篇并列，同时引用两篇种子的论文反而排到第 51 和 53 名。UI 的分组视图没有这个问题。演示和报告时请用 UI，或者在 CLI 里改用 `cites_seed_count` 排序。
+- 样本统计的年份柱状图在 Owner 第一次截图里没有显示论文数只有 1–2 篇的年份。原因是图表被意外缩放：Streamlit 图表可以用滚轮缩放，双击图表恢复后，所有柱子都正常显示（Owner 2026-11-23 确认）。不是 bug。
+- Markdown 导出把字段值放在行内代码里，是为了防止 Markdown 注入，但渲染出来不太好看，属于外观问题。
+
+**后续（不阻塞 MVP）：**
+
+1. 补齐 Robot Synesthesia：在 S2 不限流的时段，断开代理，用 3 篇种子、相同参数运行一次。已经完成的方向会命中缓存，只需要约 6 个请求。注意 7 天的缓存有效期。
+2. 课堂演示用 run 5 这个现成的真实样本，**不要当场联网采集**。
+3. 新 Key 至少每 1–2 个月用一次，避免再被移除。
