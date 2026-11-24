@@ -929,3 +929,31 @@ def test_empty_priority_displays_blank_and_can_be_cleared(app):
     app.run()
     table = next(f.value for f in app.dataframe if "editor_" in f.proto.id)
     assert table.iloc[0]["优先级"] == "" and not app.exception
+
+
+def test_home_brand_guide_and_about_stay_offline(app, monkeypatch):
+    network = Mock(side_effect=AssertionError("Home content must stay offline"))
+    monkeypatch.setattr(service, "resolve_inputs", network)
+    monkeypatch.setattr(service, "collect_online", network)
+    assert any(item.value == "PaperTrail" for item in app.title)
+    assert any(item.value == "Find your way through the literature." for item in app.subheader)
+    assert any(item.value == "别在文献堆里迷路。" for item in app.caption)
+    assert (ui.ASSETS / "favicon.png").is_file() and (ui.ASSETS / "wordmark.svg").is_file()
+    text = " ".join(item.value for item in app.markdown)
+    assert "告诉它你在读什么" in text and (ui.ASSETS / "snowball.svg").is_file()
+    assert any("滚雪球法" in item.value for item in app.caption)
+    assert any(item.value == "如何开始" for item in app.subheader)
+    app.button(key="home_about").click().run()
+    assert not app.exception
+    assert any("为什么做它" in item.value for item in app.markdown)
+    assert not network.called
+
+
+def test_return_home_from_open_sample_keeps_library(app):
+    app.button(key="home_demo").click().run()
+    assert app.session_state["view"] and not app.exception
+    app.button(key="go_home").click().run()
+    assert not app.exception and "view" not in app.session_state
+    assert any(item.value == "Find your way through the literature." for item in app.subheader)
+    app.button(key="home_demo").click().run()
+    assert app.session_state["view"] and not app.exception

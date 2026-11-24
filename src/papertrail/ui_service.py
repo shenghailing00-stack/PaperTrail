@@ -324,7 +324,9 @@ def network_figure(graph, max_nodes=100):
                                    text=[escape(display_text(graph.nodes[p].get("title"), "标题缺失")) for p in group],
                                    hovertemplate="%{text}<extra>%{fullData.name}</extra>",
                                    marker=dict(size=24 if is_seed else 13, color=color, symbol=symbol,
-                                               line=dict(color="#121212", width=2 if is_seed else 0))))
+                                               line=dict(color="#121212", width=2 if is_seed else 0)),
+                                   # Plotly fades unselected points to 0.2 by default, too dark on a dark theme.
+                                   unselected=dict(marker=dict(opacity=0.55))))
     figure.update_layout(annotations=annotations, shapes=shapes,
                          height=500, clickmode="event+select", dragmode="pan", margin=dict(l=20, r=20, t=20, b=20),
                          xaxis=dict(visible=False), yaxis=dict(visible=False, scaleanchor="x"),

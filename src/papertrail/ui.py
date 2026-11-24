@@ -15,6 +15,51 @@ from . import library, ui_library
 
 STATUS_LABELS = {"ok": "完整采集", "bounded": "按预算采样", "incomplete": "未完成",
                  "running": "进行中", "error": "失败", "interrupted": "已中断"}
+ASSETS = Path(__file__).resolve().parent / "assets"
+REPO_URL = "https://github.com/shenghailing00-stack/PaperTrail"
+MANUAL_URL = REPO_URL + "/blob/main/docs/USER_MANUAL.md"
+
+
+GOLD = "#D4A373"
+HOME_STEPS = [
+    ("edit_note", "1 · 告诉它你在读什么",
+     "在左侧「新建采集」里填上一至三篇论文的 DOI、arXiv 编号或标题就行。"
+     "还没想好读什么？先点「试用演示」随便逛逛。"),
+    ("hub", "2 · 看看它们和谁有关系",
+     "「引用网络」把你的论文和相关论文画成一张图，点一下就能看详情。"
+     "「候选论文」已经帮你分好了：前期工作和后续研究。"),
+    ("bookmark_add", "3 · 把想读的收起来",
+     "遇到感兴趣的，点「加入阅读库」。读到哪了、为什么想读，都可以记下来，"
+     "下次打开还在，也能导出成清单。"),
+]
+SNOWBALL = ("找文献时，很多人用「滚雪球法」：从一篇好论文出发，往回翻它的参考文献，往后找引用它的新论文，"
+            "一圈圈扩大阅读范围。方法很好用，手工翻起来却很费劲，PaperTrail 就是来帮你滚这个雪球的。")
+SNOWBALL_SHORT = "「滚雪球法」：从一篇好论文出发，往回翻它的参考文献，往后找引用它的新论文，一圈圈扩大阅读范围。"
+
+
+def icon(name):
+    return f":color[:material/{name}:]{{foreground=\"{GOLD}\"}}"
+
+
+@st.dialog("关于 PaperTrail", width="large")
+def about_dialog():
+    st.markdown("**为什么做它**")
+    st.markdown("刚进入一个新方向时，手里往往只有导师给的一两篇论文。参考文献列表几十条，"
+                "不知道先读哪篇；也看不出这个方向后来往哪里发展。")
+    st.markdown(SNOWBALL)
+    st.markdown("**适合谁**")
+    st.markdown("- 刚进组、开始做毕业设计或准备写综述的同学\n"
+                "- 需要在短时间内摸清一个陌生方向的人")
+    st.markdown("**它做什么**")
+    st.markdown("从你给的一至三篇论文出发，取回它们的参考文献和一部分被引论文，画成引用网络。"
+                "被多篇种子共同引用的，往往是这个方向的基础；同时引用多篇种子的，往往是较新的后续工作。"
+                "你挑出想读的论文，写下备注，导出自己的阅读清单。")
+    st.markdown("**它不做什么**")
+    st.markdown("不替你判断哪篇是经典或必读。样本按预算采集，只覆盖种子周围的一层引用，不代表整个领域。")
+    st.caption("数据来源：Semantic Scholar Academic Graph API")
+    manual, repo = st.columns(2)
+    manual.link_button("使用说明书", MANUAL_URL, width="stretch")
+    repo.link_button("GitHub 仓库", REPO_URL, width="stretch")
 
 
 def literal(text):
@@ -34,6 +79,12 @@ def paper_label(row):
 
 def choose_entry(mode):
     st.session_state["entry_mode"] = mode
+
+
+def go_home():
+    # Closing the view only leaves the page; sample and library files are untouched.
+    st.session_state.pop("view", None)
+    st.session_state["library_only"] = False
 
 
 def open_demo():
@@ -317,7 +368,11 @@ def statistics_panel(view, prefix):
 
 
 def home_panel():
-    st.caption("从几篇论文出发，找到下一篇该读的。")
+    mark, name = st.columns([1, 15], vertical_alignment="center", gap="small")
+    mark.image(str(ASSETS / "mark.svg"), width=56)
+    name.title("PaperTrail", anchor=False)
+    st.subheader("Find your way through the literature.", anchor=False)
+    st.caption("别在文献堆里迷路。")
     demo, saved, new = st.columns(3)
     with demo.container(border=True):
         if st.button("试用演示", key="home_demo", type="primary", width="stretch"):
@@ -330,9 +385,26 @@ def home_panel():
     with new.container(border=True):
         st.button("开始新的探索", key="home_new", on_click=choose_entry, args=("新建采集",), width="stretch")
         st.text("从一至三篇论文开始")
+    st.space("medium")
+    st.subheader("你是不是也遇到过", anchor=False)
+    _, diagram, _ = st.columns([1, 6, 1])
+    diagram.image(str(ASSETS / "snowball.svg"), width="stretch")
+    st.caption(SNOWBALL_SHORT)
+    st.space("medium")
+    st.subheader("如何开始", anchor=False)
+    for column, (icon_name, title, text) in zip(st.columns(3), HOME_STEPS):
+        with column.container(border=True, height="stretch"):
+            st.markdown(f"{icon(icon_name)} **{title}**")
+            st.markdown(text)
+    st.space("medium")
+    note, about = st.columns([5, 1], vertical_alignment="center")
+    note.caption("数据来自 Semantic Scholar · 每次只看种子周围一层引用，是你的起点，不是全部。")
+    if about.button("关于 PaperTrail", key="home_about", icon=":material/info:", width="stretch"):
+        about_dialog()
 
 
 def sample_overview(view):
+    st.button("返回首页", key="go_home", icon=":material/arrow_back:", type="tertiary", on_click=go_home)
     sample, stats = view["result"]["sample"], view["result"]["statistics"]
     titles = [re.split(r"[:：]", service.display_text(row.get("title"), "标题缺失"))[0]
               for row in view["result"]["seeds"]]
@@ -382,14 +454,16 @@ def sample_overview(view):
 
 
 def main():
-    st.set_page_config(page_title="PaperTrail · 文献探索", page_icon="📚", layout="wide")
-    st.title("PaperTrail")
+    st.set_page_config(page_title="PaperTrail · 文献探索", page_icon=str(ASSETS / "favicon.png"), layout="wide")
+    st.logo(str(ASSETS / "wordmark.svg"), icon_image=str(ASSETS / "mark.svg"), size="large")
     try:
         entry_panel()
         with st.sidebar:
             count = len(library.items(library.path_for()))
             if st.button(f"我的阅读库 · {count} 篇", key="open_library"):
                 st.session_state["library_only"] = True
+            if st.button("关于 PaperTrail", key="open_about", type="tertiary", icon=":material/info:"):
+                about_dialog()
         if not st.session_state.get("view") and not st.session_state.get("library_only"):
             home_panel()
     except (ValueError, OSError, sqlite3.Error) as error:
