@@ -1,5 +1,5 @@
 requests>=2.32.3,<3
 pytest>=8.3,<9
 networkx>=3.4,<4
-streamlit>=1.50,<2
+streamlit>=1.67,<2
 plotly>=6,<7

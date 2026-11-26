@@ -12,10 +12,10 @@ from unittest.mock import Mock
 import pytest
 import requests
 
-from papertrail import library, ui_service as service
+from papertrail import cli, library, ui_service as service
 from papertrail.cli import FixtureClient
 from papertrail.collector import collect
-from papertrail.store import PaperStore
+from papertrail.store import PaperStore, SourceMismatch
 
 
 @pytest.fixture(autouse=True)
@@ -204,3 +204,27 @@ def test_markdown_scope_uses_filename_without_sample_directory(view):
     assert str(sample_path) not in markdown
     assert str(sample_path.parent).replace("\\", "/") not in markdown
     assert rows[0]["sources"][0]["db_path"] == str(sample_path)
+
+
+def test_collection_rejects_existing_reading_library(view):
+    path = library.path_for(view)
+    pid = next(iter(view["rows"]))
+    library.add(path, view, pid)
+    library.update_many(path, {pid: {"status": "reading", "priority": "high", "note": "保留我的阅读备注"}})
+    digest = lambda: hashlib.sha256(path.read_bytes()).hexdigest()
+    before_hash = digest()
+    before_items = library.items(path)
+
+    with pytest.raises(SourceMismatch, match="Reading library"):
+        PaperStore(path)
+    with pytest.raises(SourceMismatch, match="Reading library"):
+        service.collect_online(str(path), [pid], 10, 5)
+    exit_code = cli.main([
+        "ARXIV:0000.00001",
+        "--offline-fixture", str(service.FIXTURE),
+        "--db", str(path),
+        "--page-size", "2",
+    ])
+    assert exit_code == 1
+    assert digest() == before_hash
+    assert library.items(path) == before_items

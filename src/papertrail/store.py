@@ -90,8 +90,18 @@ class PaperStore:
         self.source = source
         self.connection = sqlite3.connect(path)
         self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON")
-        self.connection.executescript("""
+        try:
+            existing_tables = {
+                row[0] for row in self.connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if existing_tables & {"library_items", "library_sources"}:
+                raise SourceMismatch(
+                    "Reading library database cannot be used as a collection database; choose a separate file."
+                )
+            self.connection.execute("PRAGMA foreign_keys = ON")
+            self.connection.executescript("""
             CREATE TABLE IF NOT EXISTS papers (
                 paper_id TEXT PRIMARY KEY CHECK(length(trim(paper_id)) > 0),
                 title TEXT, year INTEGER, authors_json TEXT, abstract TEXT, url TEXT,
@@ -147,26 +157,29 @@ class PaperStore:
                 FOREIGN KEY(run_id, seed_id) REFERENCES run_seeds(run_id, seed_id),
                 CHECK(direction IN ('references', 'citations'))
             );
-        """)
-        # Additive migration for TASK-002A databases created before review fixes.
-        additions = {
-            "paper_aliases": {"confirmed": "INTEGER NOT NULL DEFAULT 0",
-                              "conflicted": "INTEGER NOT NULL DEFAULT 0"},
-            "fetch_state": {"expected_count": "INTEGER", "warning_kind": "TEXT",
-                            "warning_message": "TEXT", "sample_run_id": "INTEGER REFERENCES collection_runs(run_id)",
-                            "sample_digest": "TEXT"},
-        }
-        with self.connection:
-            for table, columns in additions.items():
-                existing = {row["name"] for row in self.connection.execute(f"PRAGMA table_info({table})")}
-                for column, definition in columns.items():
-                    if column not in existing:
-                        self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-            # Legacy external aliases have no evidence of direct confirmation.
-            self.connection.execute("UPDATE paper_aliases SET confirmed = 1 WHERE alias = paper_id")
-        identity = self.connection.execute("SELECT source FROM dataset_identity WHERE singleton = 1").fetchone()
-        if identity:
-            self.source = identity["source"]
+            """)
+            # Additive migration for TASK-002A databases created before review fixes.
+            additions = {
+                "paper_aliases": {"confirmed": "INTEGER NOT NULL DEFAULT 0",
+                                  "conflicted": "INTEGER NOT NULL DEFAULT 0"},
+                "fetch_state": {"expected_count": "INTEGER", "warning_kind": "TEXT",
+                                "warning_message": "TEXT", "sample_run_id": "INTEGER REFERENCES collection_runs(run_id)",
+                                "sample_digest": "TEXT"},
+            }
+            with self.connection:
+                for table, columns in additions.items():
+                    existing = {row["name"] for row in self.connection.execute(f"PRAGMA table_info({table})")}
+                    for column, definition in columns.items():
+                        if column not in existing:
+                            self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                # Legacy external aliases have no evidence of direct confirmation.
+                self.connection.execute("UPDATE paper_aliases SET confirmed = 1 WHERE alias = paper_id")
+            identity = self.connection.execute("SELECT source FROM dataset_identity WHERE singleton = 1").fetchone()
+            if identity:
+                self.source = identity["source"]
+        except BaseException:
+            self.connection.close()
+            raise
 
     def __enter__(self):
         return self
